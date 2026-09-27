@@ -1,0 +1,76 @@
+name: cheap-eyes
+version: "0.1.0"
+slug: cheap_eyes
+description: MCP server that hands bulk reading to cheap OpenRouter models, masks secrets and checks every answer against the source.
+url: https://github.com/st412m/cheap-eyes
+arch:
+  - aarch64
+  - amd64
+init: false
+boot: auto
+startup: application
+ports:
+  3400/tcp: 3400
+ports_description:
+  3400/tcp: MCP over Streamable HTTP (token-protected)
+watchdog: tcp://[HOST]:[PORT:3400]
+# Read by the server; export writes go only to export_dir (empty = /data only).
+# No homeassistant_config: it would expose secrets.yaml.
+map:
+  - type: media
+    read_only: false
+  - type: share
+    read_only: false
+# Supervisor matches each pattern against the full path of every item under /data
+# (PurePath.match, from the right), so "results" drops the results/ folder and all
+# it holds; usage.jsonl, exports.jsonl and config.json stay in the backup.
+backup_exclude:
+  - results
+options:
+  openrouter_key: ""
+  http_token: ""
+  models:
+    - alias: fast
+      ids: qwen/qwen3.6-35b-a3b, inclusionai/ling-3.0-flash-vl
+      reasoning: none
+    - alias: long
+      ids: deepseek/deepseek-v4.1-flash
+      reasoning: none
+  defaults:
+    extract: fast
+    draft: fast
+    edits: fast
+  max_price_usd_per_mtok: {}
+  daily_budget_usd: 1.0
+  read_roots:
+    - /share
+    - /media
+  export_dir: ""
+  results_retention_days: 14
+  export_retention_days: 0
+  time_default_tz: UTC
+  https_proxy: ""
+  log_level: info
+schema:
+  openrouter_key: password
+  http_token: password(32,) # scan-secrets:allow (a schema type, not a value)
+  models:
+    - alias: match(^[A-Za-z0-9_-]+$)
+      ids: str
+      reasoning: list(none|low|default)
+  defaults:
+    extract: str?
+    draft: str?
+    edits: str?
+  max_price_usd_per_mtok:
+    in: float(0.000001,)?
+    out: float(0.000001,)?
+  daily_budget_usd: float(0.01,)
+  read_roots:
+    - str
+  export_dir: str?
+  results_retention_days: int(1,)
+  export_retention_days: int(0,)
+  time_default_tz: str
+  https_proxy: str?
+  log_level: list(trace|debug|info|notice|warning|error|fatal)

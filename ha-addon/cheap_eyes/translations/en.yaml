@@ -1,0 +1,69 @@
+configuration:
+  openrouter_key:
+    name: OpenRouter API key
+    description: A dedicated key with its own daily limit on openrouter.ai; that limit is the real spending ceiling.
+  http_token:
+    name: HTTP token
+    description: At least 32 characters. The connector URL is https://<host>/private_<token>/mcp; anyone with it can use the server.
+  models:
+    name: Models
+    description: Aliases for OpenRouter model ids. The server uses the first id of an alias that is usable and falls back to the next.
+    fields:
+      alias:
+        name: Alias
+        description: Short name used in Default alias per mode and in eyes_run.model, e.g. "fast". Letters, digits, _ and - only.
+      ids:
+        name: Model ids
+        description: OpenRouter model ids, comma-separated, in priority order. Each needs a ZDR endpoint and must be allowed by the account's Guardrails on openrouter.ai.
+      reasoning:
+        name: Reasoning
+        description: none (recommended for cheap models, reasoning tokens eat the output cap), low, or default (the model's own).
+  defaults:
+    name: Default alias per mode
+    description: Used when a call names no model. Each value must be an alias defined in Models above; an unknown alias stops the add-on at start.
+    fields:
+      extract:
+        name: extract
+        description: "Verbatim input lines, checked word for word. Value: an alias from Models."
+      draft:
+        name: draft
+        description: "Markdown notes with line refs, checked against the cited lines. Value: an alias from Models."
+      edits:
+        name: edits
+        description: "Proposed line edits as JSON, never applied. Value: an alias from Models."
+  max_price_usd_per_mtok:
+    name: Price cap (USD per 1M tokens)
+    description: Skip model ids whose ZDR price is higher. Set both in and out, or leave both empty for no cap.
+    fields:
+      in:
+        name: Input price cap
+        description: USD per 1M input tokens.
+      out:
+        name: Output price cap
+        description: USD per 1M output tokens.
+  daily_budget_usd:
+    name: Daily budget (USD)
+    description: Local cap per UTC day, checked before every model call. The key's own limit on OpenRouter is the first line.
+  read_roots:
+    name: Read roots
+    description: Folders (or single files) the server may read, e.g. /share/notes or /media/docs. Absolute paths.
+  export_dir:
+    name: Export folder
+    description: Empty = export off and the server writes only to /data. When set, it is the only folder the server may write to; keep it a scratch folder.
+  results_retention_days:
+    name: Keep results (days)
+    description: The server's own results store in /data/results is pruned after this many days.
+  export_retention_days:
+    name: Keep exports (days)
+    description: 0 = never delete exported files. N = delete the server's own unmodified exports older than N days.
+  time_default_tz:
+    name: Default time zone
+    description: IANA zone used to read log timestamps that carry no offset, e.g. UTC or Europe/Berlin.
+  https_proxy:
+    name: HTTPS proxy
+    description: Empty = direct connection. Otherwise a proxy URL for the calls to openrouter.ai, e.g. http://proxy.example.com:3128.
+  log_level:
+    name: Log level
+    description: debug or trace also prints the resolved settings (no secrets) at start.
+network:
+  3400/tcp: MCP over Streamable HTTP (token-protected)

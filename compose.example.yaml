@@ -1,0 +1,38 @@
+# cheap-eyes over Streamable HTTP in Docker. Copy to compose.yaml and adjust.
+#
+# .env next to this file (git-ignored), for example:
+#   CHEAP_EYES_OPENROUTER_KEY=<OPENROUTER_KEY>
+#   CHEAP_EYES_HTTP_TOKEN=<HTTP_TOKEN>
+# Use a dedicated OpenRouter key with its own daily limit, and at least 32 random
+# characters for the HTTP token (for example from `openssl rand -hex 32`).
+#
+# cheap-eyes.json next to this file: paths as the container sees them, e.g.
+#   { "read_roots": ["/input/notes", "/input/logs"],
+#     "write_roots": ["/export"], "export_dir": "/export",
+#     "models": { ... }, "defaults": { ... } }
+# (see cheap-eyes.example.json; drop write_roots/export_dir to keep export off).
+services:
+  cheap-eyes:
+    build: .
+    image: cheap-eyes:0.1.0
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      CHEAP_EYES_CONFIG: /config/cheap-eyes.json
+      # Outbound proxy for the calls to openrouter.ai (Node >= 22.21), only if you need one:
+      # HTTPS_PROXY: http://proxy.example.com:3128
+      # NODE_USE_ENV_PROXY: "1"
+    ports:
+      # Loopback only: put a TLS reverse proxy in front for remote clients.
+      - "127.0.0.1:3400:3400"
+    volumes:
+      - data:/data
+      - ./cheap-eyes.json:/config/cheap-eyes.json:ro
+      # Input folders, read-only.
+      - /srv/notes:/input/notes:ro
+      - /var/log/myapp:/input/logs:ro
+      # Optional export target (must be writable by uid 1000).
+      # - ./export:/export
+
+volumes:
+  data:

@@ -1,0 +1,35 @@
+{
+  "$comment": [
+    "Example config for cheap-eyes; every path must be absolute (see https://github.com/st412m/cheap-eyes/blob/main/docs/configuration.md).",
+    "The model ids in 'models' were valid on 2026-09-26 and age fast: check them with `cheap-eyes models --candidates`.",
+    "The API key is never in this file: set env CHEAP_EYES_OPENROUTER_KEY."
+  ],
+  "read_roots": ["/srv/notes", "/var/log/myapp"],
+  "deny_globs": ["*.sqlite", "private/**"],
+  "write_roots": [],
+  "results_retention_days": 14,
+  "results_max_mb": 500,
+  "export_retention_days": 0,
+  "models": {
+    "fast": {
+      "ids": ["qwen/qwen3.6-35b-a3b", "inclusionai/ling-3.0-flash-vl"],
+      "params": { "reasoning": { "effort": "none" } }
+    },
+    "long": {
+      "ids": ["deepseek/deepseek-v4.1-flash"],
+      "params": { "reasoning": { "effort": "none" } }
+    }
+  },
+  "defaults": { "extract": "fast", "draft": "fast", "edits": "fast" },
+  "max_price_usd_per_mtok": { "in": 1.0, "out": 4.0 },
+  "allow_raw_model_ids": false,
+  "daily_budget_usd": 1.0,
+  "max_file_bytes": 2097152,
+  "max_job_bytes": 5242880,
+  "max_files": 200,
+  "concurrency": 3,
+  "timeout_s": 180,
+  "mask": { "extra_patterns": [] },
+  "hook": { "max_bytes": 30720 },
+  "time": { "default_tz": "UTC" }
+}

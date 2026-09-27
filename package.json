@@ -1,0 +1,45 @@
+{
+  "name": "cheap-eyes",
+  "version": "0.1.0",
+  "description": "Cheap eyes for an expensive agent: an MCP server that hands bulk reading to cheap OpenRouter models, masks secrets and mechanically checks every answer against the source.",
+  "license": "MIT",
+  "author": "st412m",
+  "homepage": "https://github.com/st412m/cheap-eyes#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/st412m/cheap-eyes.git"
+  },
+  "bugs": "https://github.com/st412m/cheap-eyes/issues",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "openrouter",
+    "claude",
+    "delegation"
+  ],
+  "type": "module",
+  "bin": {
+    "cheap-eyes": "src/cli.js"
+  },
+  "files": [
+    "src/",
+    "hooks/",
+    "cheap-eyes.example.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=22.17"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/node": "^2.1.0",
+    "@modelcontextprotocol/server": "^2.1.0",
+    "ignore": "^7.0.10",
+    "zod": "^4.6.5"
+  }
+}
