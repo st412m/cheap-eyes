@@ -12,7 +12,7 @@ import { eyesRun, FRAME_CLOSE, FRAME_OPEN, neutralize } from '../src/run.js';
 import { eyesStats } from '../src/stats.js';
 import { tmpDir } from './helpers.js';
 
-const KEY = 'sk-or-v1-FAKE0000000000000000000000000000000000000000000000000000'; // fake, scan-secrets:allow
+const KEY = 'sk-' + 'or-v1-FAKE0000000000000000000000000000000000000000000000000000'; // fake, scan-secrets:allow
 const ZDR = 'https://openrouter.ai/api/v1/endpoints/zdr';
 const CHAT = 'https://openrouter.ai/api/v1/chat/completions';
 

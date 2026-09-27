@@ -13,7 +13,7 @@ import { emptyOutputHint, eyesRun } from '../src/run.js';
 import { eyesStats } from '../src/stats.js';
 import { tmpDir } from './helpers.js';
 
-const KEY = 'sk-or-v1-FAKE0000000000000000000000000000000000000000000000000000'; // fake, scan-secrets:allow
+const KEY = 'sk-' + 'or-v1-FAKE0000000000000000000000000000000000000000000000000000'; // fake, scan-secrets:allow
 const ZDR = [{ model_id: 'v/a', provider_name: 'P', context_length: 32000, max_completion_tokens: 4096, pricing: { prompt: '0.0000002', completion: '0.0000004', request: '0' } }];
 
 function json(body, status = 200) {

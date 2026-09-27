@@ -4,9 +4,11 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { after } from 'node:test';
 
-// A fresh temp dir per call, removed when the test file finishes.
+// A fresh temp dir per call, removed when the test file finishes. Resolved with the
+// native realpath, which the server uses too: on Windows the JS realpath keeps 8.3
+// short names (C:\Users\RUNNER~1), the native one expands them.
 export function tmpDir(prefix = 'cheap-eyes-') {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return dir;
 }

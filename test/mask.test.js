@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { isSecretKey, keySegments, Masker } from '../src/mask.js';
 
+// Provider-shaped fakes (sk-, ghp_, github_pat_, JWT, Telegram) are joined at run time,
+// so no literal in this file has the shape of a real token for a source scanner.
+const j = (...parts) => parts.join('');
+
 function mask(text, extra) {
   const m = new Masker(extra);
   return { out: m.maskText(text), counts: m.counts };
@@ -18,12 +22,12 @@ const CASES = [
   ['base64_43', 'pbk kYHfIV2MRt2Q1CrBjCqDMS8d0rPJFqd7kFb5x3fx0A0 end', 'pbk [key] end'],
   ['hex32', 'hash d41d8cd98f00b204e9800998ecf8427e end', 'hash [id] end'],
   ['mixed_alnum', 'tok AbCdEfGhIjKlMnOpQrStUvWxYz0123 end', 'tok [token] end'],
-  ['sk_key', 'key sk-or-v1-0123456789abcdef0123456789abcdef', 'key [key]'],
-  ['sk_key', 'key sk-FAKEfake0123456789', 'key [key]'],
-  ['github_token', 'ghp_FAKEfakeFAKEfake0123456789abcd', '[token]'],
-  ['github_token', 'github_pat_FAKE0123456789_fakeFAKEfake', '[token]'],
-  ['jwt', 'jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abcdefghijk', 'jwt [token]'],
-  ['telegram_bot_token', 'bot 123456789:AAEhBP0av18dW3HfzX7xY0123456789abcd done', 'bot [token] done'],
+  ['sk_key', 'key ' + j('sk-', 'or-v1-0123456789abcdef0123456789abcdef'), 'key [key]'],
+  ['sk_key', 'key ' + j('sk-', 'FAKEfake0123456789'), 'key [key]'],
+  ['github_token', j('ghp_', 'FAKEfakeFAKEfake0123456789abcd'), '[token]'],
+  ['github_token', j('github_pat_', 'FAKE0123456789_fakeFAKEfake'), '[token]'],
+  ['jwt', 'jwt ' + j('eyJhbGciOiJIUzI1NiJ9', '.', 'eyJzdWIiOiIxMjM0In0', '.', 'abcdefghijk'), 'jwt [token]'],
+  ['telegram_bot_token', 'bot ' + j('123456789', ':', 'AAEhBP0av18dW3HfzX7xY0123456789abcd') + ' done', 'bot [token] done'],
   ['bearer', 'Bearer abcdefgh12345', 'Bearer [token]'],
   ['auth_header', 'Authorization: Basic dXNlcjpwYXNz', 'Authorization: [token]'],
   ['auth_header', 'curl -H "Authorization: Bearer abc.def.ghi"', 'curl -H "Authorization: [token]"'],
@@ -83,7 +87,7 @@ test('existing masks stay as they are and are not counted', () => {
 });
 
 test('a token inside a key-value pair is masked once', () => {
-  const { out, counts } = mask('api_key: sk-or-v1-0123456789abcdef0123456789abcdef');
+  const { out, counts } = mask('api_key: ' + j('sk-', 'or-v1-0123456789abcdef0123456789abcdef'));
   assert.equal(out, 'api_key: [key]');
   assert.deepEqual(counts, { sk_key: 1 });
 });

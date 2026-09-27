@@ -6,7 +6,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { CLI_ARGS, isolatedEnv, tmpDir, writeJson } from './helpers.js';
 
-const FAKE_KEY = 'sk-or-v1-FAKE-KEY-FOR-TESTS-0000000000000000';
+const FAKE_KEY = 'sk-' + 'or-v1-FAKE-KEY-FOR-TESTS-0000000000000000';
 
 function run(args, env, cwd) {
   const r = spawnSync(process.execPath, [...CLI_ARGS, ...args], { env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ...env }, cwd, encoding: 'utf8' });

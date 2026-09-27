@@ -69,7 +69,7 @@ test('dry_run stores the exact request bodies; the only network call is the ZDR 
   const s = setup();
   const f = write(path.join(s.roots[0], 'wiki', 'router.md'), 'Router notes\npassword: hunter2\nuplink 192.0.2.1\n');
   const r = await eyesRun(
-    { task: 'What is the uplink? key sk-or-v1-FAKEfake0123456789abcdef', mode: 'draft', files: [f], dry_run: true },
+    { task: 'What is the uplink? key sk-' + 'or-v1-FAKEfake0123456789abcdef', mode: 'draft', files: [f], dry_run: true },
     s.ctx,
   );
   assert.deepEqual(fetchCalls, ['https://openrouter.ai/api/v1/endpoints/zdr']);

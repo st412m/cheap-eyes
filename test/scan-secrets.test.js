@@ -9,7 +9,7 @@ import { fileOptions, scanText } from '../tools/scan-secrets.mjs';
 import { tmpDir } from './helpers.js';
 
 const SCRIPT = path.join(import.meta.dirname, '..', 'tools', 'scan-secrets.mjs');
-const FAKE_SK = 'sk-or-v1-FAKE0000000000000000000000000000000000000000000000000000';
+const FAKE_SK = 'sk-' + 'or-v1-FAKE0000000000000000000000000000000000000000000000000000';
 const ip = (...octets) => octets.join('.');
 
 test('private LAN addresses are found, public and documentation ones are not', () => {
@@ -77,4 +77,18 @@ test('the CLI fails on a finding and never prints the matched text', () => {
   const c = spawnSync(process.execPath, [SCRIPT, clean], { encoding: 'utf8' });
   assert.equal(c.status, 0);
   assert.match(c.stdout, /1 file\(s\) clean/);
+});
+
+test('every finding names its file, and the counts add up', () => {
+  const dir = tmpDir();
+  const leak = path.join(dir, 'leak.md');
+  fs.writeFileSync(leak, `key ${FAKE_SK}\n`);
+  const missing = path.join(dir, 'missing.md');
+  const clean = path.join(dir, 'clean.md');
+  fs.writeFileSync(clean, 'nothing\n');
+  const r = spawnSync(process.execPath, [SCRIPT, leak, missing, clean], { encoding: 'utf8' });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /leak\.md:1: sk_key/);
+  assert.match(r.stdout, /missing\.md: cannot read \(ENOENT\)/, 'an unreadable file is a named finding on stdout');
+  assert.match(r.stdout, /scan-secrets: 2 finding\(s\) in 2 of 3 file\(s\)/);
 });

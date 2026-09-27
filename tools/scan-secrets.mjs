@@ -72,31 +72,65 @@ export function scanText(text, { lanOnly = false, code = false, allowFile = fals
   return found;
 }
 
+const toPosix = (p) => p.split(path.sep).join('/');
+
+function realNative(p) {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return p;
+  }
+}
+
+// A file named on the command line → { abs, rel, name }. Root and file are both
+// resolved with the native realpath, so 8.3 short names (C:\Users\RUNNER~1) and long
+// names compare equal. `rel` is the repo-relative POSIX path, or null for a file
+// outside the repo (another drive included: path.relative then returns an absolute
+// path); such a file is reported by the path as given and never counts as under test/.
+function argTarget(arg, rootReal) {
+  const abs = realNative(path.resolve(arg));
+  const r = path.relative(rootReal, abs);
+  const inside = r !== '' && !r.startsWith('..') && !path.isAbsolute(r);
+  return { abs, rel: inside ? toPosix(r) : null, name: inside ? toPosix(r) : arg };
+}
+
 function main(args) {
-  const files = (args.length ? args.map((f) => path.relative(ROOT, path.resolve(f))) : gitFiles()).map((f) => f.split(path.sep).join('/'));
-  let bad = 0;
+  const rootReal = realNative(ROOT);
+  const targets = args.length
+    ? args.map((a) => argTarget(a, rootReal))
+    : gitFiles().map((r) => ({ abs: path.join(ROOT, r), rel: toPosix(r), name: toPosix(r) }));
+  let findings = 0;
   let scanned = 0;
-  for (const rel of files) {
-    if (SKIP.some((re) => re.test(rel))) continue;
-    const abs = path.join(ROOT, rel);
+  const flagged = new Set();
+  for (const { abs, rel, name } of targets) {
+    if (rel !== null && SKIP.some((re) => re.test(rel))) continue;
     let text;
     try {
       if (!fs.statSync(abs).isFile()) continue;
       text = readText(abs);
     } catch (e) {
-      console.error(`scan-secrets: cannot read ${rel} (${e.code ?? e.message})`);
-      bad++;
+      // An unreadable file is a finding of that file, reported like any other.
+      scanned++;
+      console.log(`${name}: cannot read (${e.code ?? e.message})`);
+      findings++;
+      flagged.add(name);
       continue;
     }
     if (text === null) continue;
     scanned++;
-    for (const f of scanText(text, fileOptions(rel))) {
-      console.log(`${rel}:${f.line}: ${f.rules.join(', ')}`);
-      bad++;
+    const opts = rel === null ? { lanOnly: false, code: CODE.test(abs), allowFile: false } : fileOptions(rel);
+    for (const f of scanText(text, opts)) {
+      console.log(`${name}:${f.line}: ${f.rules.join(', ')}`);
+      findings++;
+      flagged.add(name);
     }
   }
-  console.log(bad ? `scan-secrets: ${bad} finding(s) in ${scanned} file(s)` : `scan-secrets: ${scanned} file(s) clean`);
-  return bad ? 1 : 0;
+  console.log(
+    findings
+      ? `scan-secrets: ${findings} finding(s) in ${flagged.size} of ${scanned} file(s)`
+      : `scan-secrets: ${scanned} file(s) clean`,
+  );
+  return findings ? 1 : 0;
 }
 
 function isMain() {
