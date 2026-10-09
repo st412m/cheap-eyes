@@ -1,6 +1,8 @@
 // Mechanical checks of a model answer against the exact lines each chunk carried.
 // They catch invented lines, refs outside the input and values missing from the cited
 // lines; they do not measure completeness or relevance.
+import { foldSpace, pageOf } from 'doclines';
+import { nameText, PLACE_IN_PREFIX, placeOf } from './place.js';
 
 const MASK_TOKEN = /\[[a-z_]+\]|<[A-Z][A-Z_]*>/;
 const NOT_IN_INPUT = /^\W*NOT IN INPUT\W*$/i;
@@ -11,9 +13,8 @@ function clipText(s, n = ITEM_TEXT) {
   return s.length > n ? `${s.slice(0, n)}…` : s;
 }
 
-function collapse(s) {
-  return s.replace(/\s+/g, ' ').trim();
-}
+// Whitespace-level comparison: NBSP is whitespace, U+00AD does not count.
+const collapse = foldSpace;
 
 // Remove one ``` wrapper around the whole answer.
 export function stripFence(text) {
@@ -25,10 +26,11 @@ export function stripFence(text) {
 }
 
 /**
- * What one chunk carried: `has(name, n)`, `text(name, n)`, and the name to use when
- * a single-file answer omits it.
+ * What one chunk carried: `has(name, n)`, `text(name, n)`, `page(name, n)` (a PDF
+ * page; null without a page table), `place(name, n)` (from the sections; null outside
+ * them), and the name to use when a single-file answer omits it.
  */
-export function chunkView(chunk, sources, singleName) {
+export function chunkView(chunk, sources, singleName, pages = new Map(), places = new Map()) {
   const sets = new Map();
   for (const [name, ranges] of Object.entries(chunk.lines)) {
     const set = new Set();
@@ -37,12 +39,49 @@ export function chunkView(chunk, sources, singleName) {
   }
   // Longest first, so "a b.md" wins over "b.md" and names with spaces, brackets or "#" match whole.
   const names = [...new Set([...sets.keys(), ...(singleName ? [singleName] : [])])].sort((a, b) => b.length - a.length);
+  // A name in a ref: the header name it equals; otherwise the only carried name that
+  // ends with "/" + it (models shorten "raw/x/2. Проект ГК.doc" to "2. Проект ГК.doc").
+  // Returns { name } or { ambiguous: true } or { unknown: true }.
+  const lookup = (name) => {
+    if (name === undefined || name === null || name === '') return singleName ? { name: singleName } : { unknown: true };
+    if (sets.has(name)) return { name };
+    const tail = [...sets.keys()].filter((n) => n.endsWith(`/${name}`));
+    if (tail.length === 1) return { name: tail[0] };
+    return tail.length > 1 ? { ambiguous: true } : { unknown: true };
+  };
+  // A name in a ref to lines from..to: a carried file first (lookup); else the name of
+  // an attachment (as its marker shows it) inside the carried files, since models take
+  // "--- attachment: x.docx ---" for a file header. One file with such an attachment
+  // holding the lines → { name: that file, attachment: true }; the lines outside it →
+  // { outside: reason }; such attachments in several files → { ambiguous: true }.
+  const lookupAt = (name, from, to = from) => {
+    const r = lookup(name);
+    if (!r.unknown || !name) return r;
+    const written = name.trim();
+    const hits = [];
+    for (const file of sets.keys()) {
+      const att = (places.get(file) ?? []).filter((s) => s.kind === 'attachment' && nameText(s.label) === written);
+      if (att.length) hits.push({ file, att });
+    }
+    if (hits.length === 0) return r;
+    if (hits.length > 1) return { ambiguous: true };
+    const { file, att } = hits[0];
+    if (att.some((s) => s.start <= from && to <= s.end)) return { name: file, attachment: true };
+    const n = att.some((s) => s.start <= from && from <= s.end) ? to : from;
+    return { outside: `L${n} is not inside attachment ${written}` };
+  };
   return {
     singleName,
     names,
+    lookup,
+    lookupAt,
     resolve(name) {
-      if (name === undefined || name === null || name === '') return singleName ?? null;
-      return sets.has(name) ? name : null;
+      return lookup(name).name ?? null;
+    },
+    // Why a written name did not resolve (`r`: what lookupAt gave), for reports.
+    nameProblem(name, unknownText, r = lookup(name)) {
+      if (r.ambiguous) return `ambiguous file name in ref: ${name}`;
+      return r.outside ?? unknownText;
     },
     has(name, n) {
       return sets.get(name)?.has(n) ?? false;
@@ -50,13 +89,46 @@ export function chunkView(chunk, sources, singleName) {
     text(name, n) {
       return sources.get(name)?.get(n - 1);
     },
+    page(name, n) {
+      return pageOf(pages.get(name), n);
+    },
+    // The sections give the place; without them a page table still gives "p.N".
+    place(name, n) {
+      const place = placeOf(places.get(name), n);
+      if (place !== null) return place;
+      const page = pageOf(pages.get(name), n);
+      return page === null ? null : `p.${page}`;
+    },
+    // First carried line whose whitespace-folded text contains `folded` ("name:L12"), or null.
+    find(folded) {
+      if (!folded) return null;
+      for (const [name, set] of sets) {
+        for (const n of set) if (foldSpace(sources.get(name)?.get(n - 1) ?? '').includes(folded)) return `${name}:L${n}`;
+      }
+      return null;
+    },
   };
 }
 
 // ---- extract ----
 
-const QUOTE_TAIL = /^L(\d+)\|\s?(.*)$/;
-const UNKNOWN_NAME_LINE = /^(.+?):L(\d+)\|\s?(.*)$/;
+// "L12|", or "L12 (p.3)|" / "L12 (slide 2)|" as the server writes lines with a place
+// into an extract result; any place in parentheses is read and ignored.
+const QUOTE_TAIL = new RegExp(`^L(\\d+)${PLACE_IN_PREFIX}\\|\\s?(.*)$`);
+const UNKNOWN_NAME_LINE = new RegExp(`^(.+?):L(\\d+)${PLACE_IN_PREFIX}\\|\\s?(.*)$`);
+const LINE_PREFIX = new RegExp(`^L(\\d+)${PLACE_IN_PREFIX}\\|`);
+
+// The model's line with the derived place in its prefix, "name:L12 (p.3)| text", or
+// none ("L12| text"); a place the model wrote is replaced. `shown` (a string, or null
+// for no name) replaces the name the model wrote; undefined keeps it. The text after
+// "|" is not touched.
+function withPlace(raw, q, place, shown) {
+  const lead = /^\s*/.exec(raw)[0];
+  const s = raw.slice(lead.length);
+  const at = q.name ? q.name.length + 1 : 0;
+  const head = shown === undefined ? s.slice(0, at) : shown === null ? '' : `${shown}:`;
+  return lead + head + s.slice(at).replace(LINE_PREFIX, place === null ? `L${q.n}|` : `L${q.n} (${place})|`);
+}
 
 // "name:L12| text" / "L12| text". The name is matched against the files this chunk
 // carried, longest first; an unmatched "something:L12|" keeps its name for the report.
@@ -88,18 +160,26 @@ export function checkExtractChunk(output, view, chunkIndex) {
       items.push({ chunk: chunkIndex, status: 'bad', reason: 'not a quoted input line', text: clipText(raw), raw });
       continue;
     }
-    const name = view.resolve(q.name);
     const n = q.n;
-    const ref = q.name ? `${q.name}:L${n}` : `L${n}`;
+    const found = view.lookupAt(q.name, n);
+    const name = found.name ?? null;
+    // The ref keeps the full header name the written name resolved to; a ref through an
+    // attachment name is written as a ref to the file (no name in a single-file job).
+    const shown = found.attachment ? (view.singleName ? null : name) : undefined;
+    const ref = shown !== undefined ? (shown ? `${shown}:L${n}` : `L${n}`) : q.name ? `${name ?? q.name}:L${n}` : `L${n}`;
     const base = { chunk: chunkIndex, ref, file: name ?? q.name ?? null, line: n, text: clipText(q.text), raw };
     if (!name) {
-      items.push({ ...base, status: 'bad', reason: q.name ? 'unknown file name' : 'file name missing (several files)' });
+      items.push({ ...base, status: 'bad', reason: q.name ? view.nameProblem(q.name, 'unknown file name', found) : 'file name missing (several files)' });
       continue;
     }
     if (!view.has(name, n)) {
       items.push({ ...base, status: 'bad', reason: 'line not in this chunk\'s input' });
       continue;
     }
+    const page = view.page(name, n);
+    const place = view.place(name, n);
+    base.raw = withPlace(raw, q, place, shown);
+    if (place !== null) Object.assign(base, { ref: `${ref} (${place})`, ...(page !== null ? { page } : {}), place });
     const src = view.text(name, n);
     const said = q.text;
     if (said === src) items.push({ ...base, status: 'ok' });
@@ -277,14 +357,18 @@ export function checkDraftChunk(output, view, chunkIndex) {
     let refsOk = 0;
     let refsBad = 0;
     const cited = [];
+    const pages = new Set();
+    const places = new Set();
     if (refs.length === 0) issues.push('no ref');
     for (const r of refs) {
-      const name = view.resolve(r.name);
-      const endName = r.endName ? view.resolve(r.endName) : name;
+      const start = view.lookupAt(r.name, r.from, r.endName ? r.from : r.to);
+      const end = r.endName ? view.lookupAt(r.endName, r.to) : start;
+      const name = start.name ?? null;
+      const endName = end.name ?? null;
       const label = r.raw;
       if (!name || endName !== name) {
         refsBad++;
-        issues.push(`ref to an unknown file: ${label}`);
+        issues.push(!name ? view.nameProblem(r.name, `ref to an unknown file: ${label}`, start) : view.nameProblem(r.endName, `ref to an unknown file: ${label}`, end));
         continue;
       }
       if (r.to < r.from) {
@@ -300,6 +384,12 @@ export function checkDraftChunk(output, view, chunkIndex) {
       refsOk++;
       if (r.to - r.from + 1 > WIDE_REF) soft.push(`wide ref: ${label}`);
       for (let n = r.from; n <= r.to; n++) if (view.has(name, n)) cited.push(view.text(name, n));
+      for (const n of [r.from, r.to]) {
+        const p = view.page(name, n);
+        if (p !== null) pages.add(p);
+        const at = view.place(name, n);
+        if (at !== null) places.add(at);
+      }
     }
     if (cited.length) {
       const hay = cited.join('\n');
@@ -309,7 +399,17 @@ export function checkDraftChunk(output, view, chunkIndex) {
       for (const n of numbers) if (!new RegExp(`(?<!\\d)${n}(?!\\d)`).test(hay)) soft.push(`number not in cited lines: ${n}`);
     }
     const status = issues.length ? 'bad' : soft.length ? 'flag' : 'ok';
-    items.push({ chunk: chunkIndex, out_line: i + 1, status, issues: [...issues, ...soft], refs_ok: refsOk, refs_bad: refsBad, text: clipText(line) });
+    items.push({
+      chunk: chunkIndex,
+      out_line: i + 1,
+      status,
+      issues: [...issues, ...soft],
+      refs_ok: refsOk,
+      refs_bad: refsBad,
+      ...(pages.size ? { pages: [...pages].sort((a, b) => a - b) } : {}),
+      ...(places.size ? { places: [...places] } : {}),
+      text: clipText(line),
+    });
   });
   return items;
 }
@@ -370,12 +470,17 @@ export function checkEditsChunk(output, view, chunkIndex) {
       continue;
     }
     const n = lineNumber(v.line);
-    const name = view.resolve(typeof v.file === 'string' ? v.file : null);
+    const found = view.lookupAt(typeof v.file === 'string' ? v.file : null, n ?? 0);
+    const name = found.name ?? null;
     const edit = { chunk: chunkIndex, file: name ?? v.file ?? null, line: n, old: v.old, new: v.new, why: v.why };
+    const page = name && n !== null ? view.page(name, n) : null;
+    if (page !== null) edit.page = page;
+    const place = name && n !== null ? view.place(name, n) : null;
+    if (place !== null) edit.place = place;
     const reject = (reason) => rejected.push({ ...edit, reason });
     if (typeof v.old !== 'string' || typeof v.new !== 'string' || v.old === '') reject('"old" and "new" must be strings, "old" non-empty');
     else if (n === null) reject('bad "line"');
-    else if (!name) reject(v.file ? 'unknown file name' : 'file name missing (several files)');
+    else if (!name) reject(v.file ? view.nameProblem(v.file, 'unknown file name', found) : 'file name missing (several files)');
     else if (!view.has(name, n)) reject('line not in this chunk\'s input');
     else if (MASK_TOKEN.test(v.old) || MASK_TOKEN.test(v.new)) reject('touches a mask: the masked text is not what is on disk');
     else {
@@ -400,8 +505,8 @@ function keyOf(file, line) {
  * (file, line) an earlier chunk already covered is dropped.
  * `outs[i]` may be null for a chunk that did not finish.
  */
-export function checkJob({ mode, chunks, outs, sources, singleName, spanText }) {
-  const views = chunks.map((c) => chunkView(c, sources, singleName));
+export function checkJob({ mode, chunks, outs, sources, pages, places, singleName, spanText }) {
+  const views = chunks.map((c) => chunkView(c, sources, singleName, pages, places));
   if (mode === 'extract') {
     const items = [];
     const seen = new Set();
@@ -415,7 +520,7 @@ export function checkJob({ mode, chunks, outs, sources, singleName, spanText }) 
           seen.add(k);
         }
         textLines.push(it.raw ?? it.text);
-        items.push({ ...it, result_line: textLines.length, raw: undefined });
+        items.push(lean({ ...it, result_line: textLines.length, raw: undefined }));
       }
     });
     const c = count(items, ['ok', 'ok~', 'partial', 'bad', 'not_in_input']);
@@ -439,7 +544,7 @@ export function checkJob({ mode, chunks, outs, sources, singleName, spanText }) 
         parts.push(`=== chunk ${i + 1} (${spanText(chunks[i].span)}) ===`);
         offset++;
       }
-      for (const it of checkDraftChunk(body, views[i], i + 1)) items.push({ ...it, result_line: offset + it.out_line });
+      for (const it of checkDraftChunk(body, views[i], i + 1)) items.push(lean({ ...it, result_line: offset + it.out_line }));
       parts.push(body);
       offset += body === '' ? 1 : body.split('\n').length;
     });
@@ -489,15 +594,43 @@ export function checkJob({ mode, chunks, outs, sources, singleName, spanText }) 
   };
 }
 
+export const OK_STATUSES = new Set(['ok', 'ok~']);
+
+// An ok item keeps its ref and status only: the line itself is in the result.
+function lean(it) {
+  if (!OK_STATUSES.has(it.status)) return it;
+  const { text, ...rest } = it;
+  return rest;
+}
+
 function count(items, keys) {
   const c = Object.fromEntries(keys.map((k) => [k, 0]));
   for (const it of items) if (it.status in c) c[it.status]++;
   return c;
 }
 
+// " (p.2, 3)" for PDF pages only, " (slide 2, notes 2)" otherwise, "" without places.
+function placesText(it) {
+  const list = it.places ?? (it.pages ? it.pages.map((p) => `p.${p}`) : []);
+  if (!list.length) return '';
+  if (it.pages && list.every((p) => /^p\.\d+$/.test(p))) return ` (p.${it.pages.join(', ')})`;
+  return ` (${list.join(', ')})`;
+}
+
 // One line per bad item, for headers.
 export function describeItem(it) {
-  const where = it.ref ?? (it.file !== undefined && it.line !== undefined ? `${it.file ?? ''}:L${it.line}` : `line ${it.result_line ?? it.out_line ?? '?'}`);
+  if (it.path !== undefined) {
+    // schema: field path, ref, status, note
+    const where = `${it.path || '(root)'}${it.ref ? ` ${it.ref}` : ''}`;
+    return clipText(`${where} [${it.status}] ${it.note ?? it.reason ?? ''}`.trim(), 180);
+  }
+  if (it.status === 'failed') return clipText(`chunk ${it.chunk} [failed] ${it.reason}`, 180);
+  const at = it.place ?? (it.page ? `p.${it.page}` : null);
+  const where =
+    it.ref ??
+    (it.file !== undefined && it.line !== undefined
+      ? `${it.file ?? ''}:L${it.line}${at ? ` (${at})` : ''}`
+      : `line ${it.result_line ?? it.out_line ?? '?'}${placesText(it)}`);
   const why = it.reason ?? (it.issues ?? []).join('; ');
   return clipText(`${where} [${it.status ?? 'bad'}] ${why}`, 180);
 }

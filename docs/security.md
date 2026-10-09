@@ -1,8 +1,8 @@
 # Security
 
-What the model can reach, what leaves your machine and where it goes, which files the
-server may read and write, how secrets are masked, how HTTP mode is guarded, and what
-a leaked token gives. Read this before pointing `read_roots` at sensitive folders or
+What the model can reach, what leaves your machine and where it goes, which files and
+URLs the server may read and write, how secrets are masked, how HTTP mode is guarded,
+and what a leaked token gives. Read this before pointing `read_roots` at sensitive folders or
 exposing the server beyond your own machine.
 
 ## The model has no tools
@@ -15,8 +15,10 @@ untrusted output (`--- untrusted model output ---` … `--- end ---`).
 
 ## Where data goes
 
-- The only host the server talks to is `openrouter.ai`, and only for `eyes_run` calls
-  and the model and key lists. Nothing else ever leaves the machine.
+- The server talks to `openrouter.ai` for `eyes_run` calls and the model and key
+  lists. The only other requests are the `http(s)` URLs named in `eyes_run.files`,
+  fetched by the server itself (see [URL fetch](#url-fetch)); `url_input: false` turns
+  them off. Nothing else leaves the machine.
 - Every request requires Zero Data Retention endpoints — providers that don't store
   your prompts (`provider: {zdr: true, data_collection: "deny"}`) — and switches
   OpenRouter's prompt compression off. A model id without a ZDR endpoint is refused,
@@ -34,8 +36,12 @@ untrusted output (`--- untrusted model output ---` … `--- end ---`).
   by path segments, case-insensitive on Windows, UNC paths (`\\host\share\…`)
   included.
 - Any `..` segment is refused.
-- Binaries and files over `max_file_bytes` are refused, never truncated. Every refusal
-  names the path.
+- Binaries, unsupported formats (see [formats](formats.md#refused-formats)) and files
+  over the size limits are refused, never truncated. Every refusal names the path.
+- Every format but plain text is extracted in a worker thread with a timeout and a
+  heap cap, so a hostile file cannot hang or exhaust the server. ZIP containers are
+  read with limits on entries and unpacked size, and XML without DTD processing (no
+  entity expansion).
 - Globs honour the nearest `.gitignore`.
 - A line range `#L100-L400` works on a single file only.
 
@@ -44,6 +50,37 @@ untrusted output (`--- untrusted model output ---` … `--- end ---`).
 Deny-listed names are refused: the built-in list `.env*`, `*.key`, `*.pem`, `id_*`,
 `secrets.yaml`, `*.db`, `.git/**`, `node_modules/**`, plus your own `deny_globs`
 (added to the built-in list, never replacing it).
+
+## URL fetch
+
+A URL in `files` is fetched by the server; the agent never sees the raw page.
+
+- **Scheme and port:** `http` and `https` only, ports 80 and 443 only; URLs with a
+  user name or password are refused. No cookies, no `Authorization`.
+- **Address guard:** before every request and every redirect (at most 5), IP literals
+  and every address the host name resolves to are checked against a `net.BlockList`:
+  loopback, `0.0.0.0/8`, RFC 1918, CGNAT `100.64.0.0/10`, link-local
+  `169.254.0.0/16` (cloud metadata `169.254.169.254` included) and `fe80::/10`, ULA
+  `fc00::/7`, multicast, reserved `240.0.0.0/4`, `::` and `::1`, IPv4-mapped IPv6 of
+  all of those, the whole IPv4-compatible `::/96`, and the IPv4 address inside NAT64
+  (`64:ff9b::/96`, `64:ff9b:1::/48`) and 6to4 (`2002::/16`) addresses. One blocked
+  address refuses the URL; the message names the host, not the addresses.
+- **Pinned connection:** without a proxy the connection uses only the addresses that
+  passed the check (the server's own `lookup`), so a DNS answer that changes between
+  the check and the connection (DNS rebinding) cannot reach a private address. The
+  `Host` header and the TLS name check stay on the host name.
+- **Behind a proxy** (`HTTPS_PROXY` for `https://`, `HTTP_PROXY` for `http://`, with
+  `NODE_USE_ENV_PROXY=1`; Node ≥ 22.21 or ≥ 24.5), the proxy resolves the name itself.
+  The local check still runs and refuses a name that resolves to a blocked address
+  here, but it is best effort: the proxy may resolve differently. A name that does not
+  resolve locally is left to the proxy. With a proxy set and an older Node, URL fetches
+  are refused rather than sent around the proxy.
+- **Limits:** `url_timeout_s` for the whole fetch, `max_url_bytes` counted while
+  streaming and after decompression, an allowlist of content types (see
+  [tools](tools.md#url-input)).
+- **What is kept:** the fetched text is masked like a file. The full URL (every query
+  value masked) and the final URL after redirects go to the sources index of the
+  result; the usage log holds the host and the size only.
 
 ## Secret masking
 
@@ -99,6 +136,8 @@ Whoever has it can, until you change it:
 - run `eyes_run` over everything under `read_roots` and read the masked results;
 - read the results already stored in the results store;
 - write result files into `export_dir`, if set;
+- make the server fetch public web pages (not private addresses) and read the masked
+  text, unless `url_input` is `false`;
 - spend money up to `daily_budget_usd` per day and the key's own limit.
 
 Change the token and restart the server; consider rotating the OpenRouter key.

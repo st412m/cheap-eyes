@@ -230,7 +230,8 @@ test('503 (no provider) after retries → the next id of the alias; the id used 
   const r = await eyesRun({ task: 't', mode: 'extract', files: [f] }, s.ctx, deps(s, mock, { sleep: async (ms) => sleeps.push(ms) }));
   assert.deepEqual(mock.chats().map((c) => c.body.model), ['v/a', 'v/a', 'v/a', 'v/b']);
   assert.deepEqual(sleeps, [1000, 3000]);
-  assert.equal(mock.chats()[3].body.max_completion_tokens, 4096, 'fallback id gets its own cap');
+  assert.equal(mock.chats()[0].body.max_completion_tokens, 2048, 'extract default 16000 capped by v/a');
+  assert.equal(mock.chats()[3].body.max_completion_tokens, 8192, 'fallback id gets its own cap');
   assert.match(r.header, /-> v\/a \(used: v\/b-2026-09\)/);
   const usage = fs.readFileSync(path.join(s.stateDir, 'usage.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   assert.deepEqual(usage.at(-1).models_used, ['v/b-2026-09']);
@@ -428,7 +429,7 @@ test('eyes_stats: today and all-time totals, key status without the label, model
   assert.match(out, /budget: daily_budget_usd \$1; spent today \$0\.2500, reserved \$0\.0000/);
   assert.match(out, /key: limit \$10, remaining \$7\.5, reset daily, usage today \(UTC\) \$2\.5/);
   assert.ok(!out.includes('sk-or-v1-FAK'), 'the key label is never shown');
-  assert.match(out, /\ndefaults: extract -> fast, draft -> fast, edits -> fast\naccount: 5 models allowed \(GET \/models\/user\)/, 'defaults per mode come first');
+  assert.match(out, /\ndefaults: extract -> fast, draft -> fast, edits -> fast, schema -> fast \(extract default\)\naccount: 5 models allowed \(GET \/models\/user\)/, 'defaults per mode come first');
   assert.match(out, /fast -> v\/a {2}\(jobs 2, avg cost \$0\.3750/);
   assert.match(out, /\* v\/a +zdr 2, ctx 16000, max out 2048, in \$0\.2 \/ out \$0\.4 per 1M/);
   assert.match(out, /pricey -> NO USABLE ID/);
@@ -519,7 +520,7 @@ test('eyes_stats and the model table: defaults per mode, "(not set)" when a mode
   const s = setup({ defaults: { draft: 'fast' } });
   const mock = mockFetch(() => assert.fail());
   const out = await eyesStats({ models: true }, s.ctx, deps(s, mock));
-  assert.match(out, /\ndefaults: extract -> \(not set\), draft -> fast, edits -> \(not set\)\n/);
+  assert.match(out, /\ndefaults: extract -> \(not set\), draft -> fast, edits -> \(not set\), schema -> \(not set\)\n/);
 });
 
 test('eyes_stats without a key and without network still reports local numbers', async () => {

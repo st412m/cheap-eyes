@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import ignore from 'ignore';
 import { InputError } from '../errors.js';
 import { isAbsoluteStrict, isInside, pathApi } from '../paths.js';
+import { maskedUrl, parseUrlEntry, SCHEME_RE, URL_RE, urlName } from './url.js';
 
 const RANGE_RE = /#L(\d+)-L(\d+)$/;
 const GLOB_MAGIC = /[*?[\]{}()!]/;
@@ -181,8 +182,9 @@ export async function expandFiles(entries, { config, platform = process.platform
   const key = (p) => (platform === 'win32' ? p.toLowerCase() : p);
 
   const add = (f) => {
-    if (seen.has(key(f.real))) return;
-    seen.add(key(f.real));
+    const k = f.url ?? key(f.real);
+    if (seen.has(k)) return;
+    seen.add(k);
     files.push(f);
     if (files.length > config.max_files) {
       throw new InputError(`too many files: more than max_files ${config.max_files} (stopped at ${f.real})`);
@@ -196,8 +198,20 @@ export async function expandFiles(entries, { config, platform = process.platform
     return root;
   };
 
+  let urls = 0;
   for (const raw of entries) {
     if (hasControlChars(raw)) throw new InputError(`control characters in a path are refused: ${JSON.stringify(raw)}`);
+    if (URL_RE.test(raw)) {
+      if (!config.url_input) throw new InputError(`URL input is off (url_input: false): ${maskedUrl(raw.replace(/#.*$/, ''))}`, { reason: 'URL input is off' });
+      const u = parseUrlEntry(raw);
+      const url = u.toString();
+      // Each URL is its own pseudo-root: a name clash falls back to "#u<k>/host/path".
+      add({ url, real: null, root: { index: `u${++urls}`, kind: 'url', real: null }, rel: urlName(url), range: null, literal: true, given: maskedUrl(url) });
+      continue;
+    }
+    if (SCHEME_RE.test(raw)) {
+      throw new InputError(`URL scheme refused: ${raw.slice(0, raw.indexOf(':') + 1)} (only http and https; local files by absolute path)`, { reason: 'URL scheme refused' });
+    }
     const { path: p, range } = parseRange(raw);
     if (hasDotDot(p, platform)) throw new InputError(`".." segments are refused: ${p}`);
     if (range && entries.length > 1) throw new InputError(`a line range is allowed only with a single file: ${raw}`);

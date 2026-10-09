@@ -1,0 +1,11 @@
+Third-party test files
+----------------------
+The following file in this folder is a copy of a test file from Apache POI
+(https://github.com/apache/poi), commit
+ae62bb5116b9aee19ebd5834e3a82066132c9f7f, licensed under the Apache
+License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0).
+It is used unchanged, only renamed:
+
+- formats/refused-encrypted.ppt <- test-data/slideshow/Password_Protected-hello.ppt
+
+These files are test data only and are not part of the npm package.

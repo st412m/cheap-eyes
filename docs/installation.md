@@ -129,6 +129,10 @@ HTTPS_PROXY=http://proxy.example.com:3128
 NODE_USE_ENV_PROXY=1
 ```
 
+The same proxy is used for `https://` URLs in `eyes_run.files`; `http://` URLs use
+`HTTP_PROXY` and go direct when only `HTTPS_PROXY` is set. Fetching URLs through a
+proxy needs Node ≥ 22.21 (≥ 24.5 on 24); see [URL fetch](security.md#url-fetch).
+
 Without `NODE_USE_ENV_PROXY=1` Node ignores `HTTPS_PROXY`. `check-config` prints
 `proxy: HTTPS_PROXY set` or `proxy: direct`, never the proxy URL (it may carry
 credentials). The Home Assistant app has an `https_proxy` option that sets both;

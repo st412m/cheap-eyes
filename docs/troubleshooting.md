@@ -1,8 +1,8 @@
 # Troubleshooting
 
 Symptoms seen in real use and what they mean: refusals from OpenRouter, blocked
-models, a server that won't start, a connector that gets 404, a stale tool list, and
-budget refusals. Start here when a call fails or a client misbehaves.
+models, a server that won't start, a connector that gets 404, a stale tool list,
+budget refusals, documents that yield no text, and refused URLs. Start here when a call fails or a client misbehaves.
 
 ## OpenRouter answers 403 "Access denied by security policy"
 
@@ -69,3 +69,43 @@ in the client (or remove the connector and add it again), then start a new chat.
 
 In both cases `eyes_stats` shows today's spend, the local budget and reservations, and
 the key's `limit`, `limit_remaining` and `usage_daily`.
+
+## A PDF gives no text, or "no usable text layer (scanned PDF?)"
+
+The PDF is a scan: its pages are images with no text layer, and cheap-eyes does no OCR.
+A PDF whose pages average under 20 characters of text is refused; one with only some
+empty pages is read, and the header lists them: `pages without text layer: 3, 7–9`.
+Run the file through an OCR tool first, or give the text another way. See
+[refused formats](formats.md#refused-formats).
+
+## "unsupported format: …" or "encrypted document"
+
+The file is a format cheap-eyes does not read (a spreadsheet, an image, an archive, an
+old Office format) or needs a password to open. The format is detected from the
+content, so renaming the file does not help. For a spreadsheet use grep or code;
+otherwise save the file as PDF, DOCX or text. A glob skips such files and lists them in
+the header. See [refused formats](formats.md#refused-formats).
+
+## A URL is refused
+
+The message names the reason:
+
+- `URL refused: <host> resolves to a private, loopback or otherwise blocked address` —
+  the guard refuses local and private addresses, by design; read such a page from a
+  file instead.
+- `port <n> … (only 80 and 443)`, `URL scheme refused`, `URL with credentials refused`.
+- `content type <type> … is not read` — the server sent a type outside the allowlist
+  (a PDF served as `application/octet-stream`, for example). Download it and pass the
+  file.
+- `sent more than max_url_bytes`, `URL timed out` — raise `max_url_bytes` or
+  `url_timeout_s`.
+- `URL input is off` — `url_input` is `false`.
+- `HTTP 403 from <host> (some sites require a contact in User-Agent: set url_contact)`
+  — the site refuses automated fetches without a contact. Set `url_contact` in the
+  config, e.g. `"url_contact": "cheap-eyes@example.com"`, and restart. The value is sent
+  to every site the server fetches and does not need to be a real address.
+  Without the hint, the site refuses the request for another reason.
+- `a proxy is configured, but Node … cannot send URL fetches through it` — update Node
+  to 22.21 or later (24.5 or later on 24).
+
+See [URL fetch](security.md#url-fetch).

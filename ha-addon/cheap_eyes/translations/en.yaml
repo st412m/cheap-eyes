@@ -31,6 +31,9 @@ configuration:
       edits:
         name: edits
         description: "Proposed line edits as JSON, never applied. Value: an alias from Models."
+      schema:
+        name: schema
+        description: "JSON fields with a ref and a quote each. Empty = the extract alias. Value: an alias from Models."
   max_price_usd_per_mtok:
     name: Price cap (USD per 1M tokens)
     description: Skip model ids whose ZDR price is higher. Set both in and out, or leave both empty for no cap.
@@ -61,7 +64,13 @@ configuration:
     description: IANA zone used to read log timestamps that carry no offset, e.g. UTC or Europe/Berlin.
   https_proxy:
     name: HTTPS proxy
-    description: Empty = direct connection. Otherwise a proxy URL for the calls to openrouter.ai, e.g. http://proxy.example.com:3128.
+    description: Empty = direct connection. Otherwise a proxy URL for the calls to openrouter.ai and for https:// pages in files, e.g. http://proxy.example.com:3128.
+  url_input:
+    name: URL input
+    description: Allow http(s) URLs in eyes_run files; the app fetches the page itself. Private and local addresses are always refused.
+  url_contact:
+    name: URL contact
+    description: "Optional, leave empty. Only for sites that refuse automated fetches without a contact (HTTP 403). The value is sent to every site the app fetches; it does not need to be a real address, e.g. cheap-eyes@example.com. 1–100 printable ASCII characters without (, ) or ;."
   log_level:
     name: Log level
     description: debug or trace also prints the resolved settings (no secrets) at start.

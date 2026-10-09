@@ -1,0 +1,12 @@
+2026-09-01 08:00:01 boot: firmware 2.4.1 started
+2026-09-01 08:00:05 net: link up on eth0
+2026-09-01 08:14:22 power: mains lost, switching to battery
+2026-09-01 08:14:23 ups: battery at 97%
+2026-09-01 08:30:00 cron: backup job finished
+2026-09-01 09:02:41 power: mains restored after 48 min
+2026-09-01 09:02:45 ups: charging, battery at 61%
+2026-09-01 10:15:00 disk: sda temperature 41 C
+2026-09-01 11:00:00 net: dhcp lease renewed
+2026-09-01 12:40:09 power: brownout detected, input 182 V
+2026-09-01 12:40:10 ups: on battery for 3 s
+2026-09-01 13:00:00 cron: report sent

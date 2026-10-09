@@ -57,7 +57,7 @@ cheap-eyes models --candidates --min-context 100000 --max-price-in 0.5
 ```
 
 prints first the default alias per mode (`defaults: extract -> long, draft -> fast,
-edits -> fast`) and whether the account list could be read, then, per alias, the
+edits -> fast, schema -> long (extract default)`) and whether the account list could be read, then, per alias, the
 resolved id, `blocked by account` per id where it applies, ZDR endpoint count, minimum
 context, price in/out per 1M tokens and — from your own usage log — jobs, average cost
 and the **check pass rate** (extract: verbatim `ok` share; draft: share of lines
@@ -66,6 +66,10 @@ your real work. Candidates are up to 10 ZDR text models not in your config that 
 account may use, cheapest first; they are suggestions only. The same table is
 `eyes_stats {models: true}`. `cheap-eyes models` reads the account list only when
 `CHEAP_EYES_OPENROUTER_KEY` is set; without it availability is unknown.
+
+The pass rate shows invented quotes, not missed ones. To compare models on recall and
+precision against expected answers, run [`cheap-eyes bench`](bench.md) on a suite of
+your own documents.
 
 ## Spending
 

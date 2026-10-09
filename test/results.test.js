@@ -89,12 +89,25 @@ test('paged lines: at most 16 KB per call; a single huge line is clipped', async
   const ctx = store();
   const text = Array.from({ length: 50 }, (_, i) => `${i} ${'x'.repeat(1000)}`).join('\n') + '\n' + 'y'.repeat(40000) + '\n';
   const id = await saved(ctx, text);
-  const p = await eyesResult({ id, offset: 1 }, ctx);
+  const p = await eyesResult({ id, offset: 1, full: true }, ctx);
   assert.ok(Buffer.byteLength(p) <= MAX_BYTES + 200, `${Buffer.byteLength(p)}`);
   assert.match(p, /^lines 1–16 of 51; more: next offset 17/);
-  const huge = await eyesResult({ id, offset: 51 }, ctx);
+  const huge = await eyesResult({ id, offset: 51, full: true }, ctx);
   assert.match(huge, /\(line clipped\)/);
   assert.ok(Buffer.byteLength(huge) <= MAX_BYTES + 200);
+});
+
+test('paged lines over 400 chars are clipped with the rest counted; full: true does not clip', async () => {
+  const ctx = store();
+  const long = `${'a'.repeat(400)}${'b'.repeat(150)}`;
+  const id = await saved(ctx, `short\n${long}\n${'c'.repeat(400)}\n`);
+  const lines = (await eyesResult({ id, offset: 1 }, ctx)).split('\n');
+  assert.equal(lines[2], 'short');
+  assert.equal(lines[3], `${'a'.repeat(400)} … (+150 chars)`);
+  assert.equal(lines[4], 'c'.repeat(400));
+  assert.equal((await eyesResult({ id, offset: 2, limit: 1, full: true }, ctx)).split('\n')[2], long);
+  // Grep views clip the same way.
+  assert.match(await eyesResult({ id, grep: 'b{3}' }, ctx), /^#2: a{400} … \(\+150 chars\)$/m);
 });
 
 test('frame markers inside stored text are neutralised', async () => {
@@ -124,11 +137,15 @@ test('check: the report with bad items first, paged', async () => {
     ],
   };
   const id = await saved(ctx, 'x\n', { checks });
-  const out = await eyesResult({ id, check: true }, ctx);
-  const lines = out.split('\n');
+  const all = (await eyesResult({ id, check: 'all' }, ctx)).split('\n');
+  assert.equal(all[0], 'check summary: {"ok":2,"bad":1}');
+  assert.match(all[1], /^items \(bad first\) 1–3 of 3; end/);
+  assert.equal(JSON.parse(all[3]).ref, 'L9');
+  // check: true hides ok items.
+  const lines = (await eyesResult({ id, check: true }, ctx)).split('\n');
   assert.equal(lines[0], 'check summary: {"ok":2,"bad":1}');
-  assert.match(lines[1], /^items \(bad first\) 1–3 of 3; end/);
-  assert.equal(JSON.parse(lines[3]).ref, 'L9');
+  assert.match(lines[1], /^items not ok \(bad first; check: "all" for every item\) 1–1 of 1; end/);
+  assert.deepEqual(JSON.parse(lines[3]), { status: 'bad', ref: 'L9', reason: 'text differs' });
   const dry = await writeResult(ctx.resultsDir, 'extract', { md: '[]\n', check: (i) => ({ id: i, status: 'done', kind: 'dry_run' }) });
   assert.match(await eyesResult({ id: dry, check: true }, ctx), /no check report/);
 });

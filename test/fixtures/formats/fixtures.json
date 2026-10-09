@@ -1,0 +1,366 @@
+{
+  "_about": "Synthetic fixtures for format extraction tests (cheap-eyes 0.2). Generated 2026-10-02 with LibreOffice from source.html (text.*, lo-export.rtf, refused.*), with LibreOffice from a one-line text (refused-encrypted.docx/.doc, password 'test') and by hand (cp1251-hand.rtf, cp1251.html, cp1252.html). Assert properties, not byte-equal text. password value is a fake built for the masking test. Presentation, OpenDocument, book and mail fixtures, text.xlsx and refused-encrypted.ppt are copies from doclines test/fixtures/formats.",
+  "text.pdf": {
+    "format": "pdf",
+    "outcome": "text",
+    "pages": 1,
+    "must": [
+      "Fixture: cheap-eyes formats",
+      "Bid security: 1 000 000 PKR",
+      "Срок исполнения контракта — 27 ноября 2026 года",
+      "планируем",
+      "НМЦК: 3 605 044,00 руб.",
+      "工作温度",
+      "End of fixture.",
+      "−40"
+    ],
+    "must_not": [
+      "­",
+      " ",
+      "Ð",
+      "Ã",
+      "â€"
+    ],
+    "table_row": null,
+    "notes": "PDF tables are not reconstructed; only check that Temperature, −40 and 105 appear. The CJK font is embedded (NotoSerifCJK)."
+  },
+  "text.docx": {
+    "format": "docx",
+    "outcome": "text",
+    "must": [
+      "Fixture: cheap-eyes formats",
+      "Bid security: 1 000 000 PKR",
+      "Срок исполнения контракта — 27 ноября 2026 года",
+      "планируем",
+      "НМЦК: 3 605 044,00 руб.",
+      "工作温度",
+      "End of fixture."
+    ],
+    "must_not": [
+      "­",
+      " ",
+      "Ð",
+      "Ã",
+      "â€"
+    ],
+    "table_row": "Temperature | −40 | 105"
+  },
+  "text.doc": {
+    "format": "doc",
+    "outcome": "text",
+    "must": [
+      "Fixture: cheap-eyes formats",
+      "Bid security: 1 000 000 PKR",
+      "Срок исполнения контракта — 27 ноября 2026 года",
+      "планируем",
+      "НМЦК: 3 605 044,00 руб.",
+      "工作温度",
+      "End of fixture."
+    ],
+    "must_not": [
+      "­",
+      " ",
+      "Ð",
+      "Ã",
+      "â€"
+    ],
+    "table_row": "Temperature | −40 | 105"
+  },
+  "lo-export.rtf": {
+    "format": "rtf",
+    "outcome": "text",
+    "must": [
+      "Fixture: cheap-eyes formats",
+      "Bid security: 1 000 000 PKR",
+      "Срок исполнения контракта — 27 ноября 2026 года",
+      "планируем",
+      "НМЦК: 3 605 044,00 руб.",
+      "工作温度",
+      "End of fixture."
+    ],
+    "must_not": [
+      "­",
+      " ",
+      "Ð",
+      "Ã",
+      "â€",
+      "Liberation",
+      "Times New Roman"
+    ],
+    "table_row": "Temperature | −40 | 105",
+    "notes": "LibreOffice export: Unicode via \\uN."
+  },
+  "cp1251-hand.rtf": {
+    "format": "rtf",
+    "outcome": "text",
+    "must": [
+      "Инструкция по охране труда (фикстура)",
+      "не моложе 18 лет",
+      "Температура: −40 … 105 °C",
+      "English line in a cp1252 font.",
+      "Конец фикстуры."
+    ],
+    "must_not": [
+      "Hidden info title",
+      "Hidden author",
+      "cheap-eyes fixture",
+      "hidden_bookmark",
+      "Times New Roman",
+      "\\'"
+    ],
+    "table_row": "Мука | 2 м | 8",
+    "notes": "\\ansicpg1251 + \\'xx, \\fcharset204/0 fonts, \\u8722? minus, info/stylesheet/generator/bookmark destinations skipped."
+  },
+  "utf8.html": {
+    "format": "html",
+    "outcome": "text",
+    "must": [
+      "Fixture: cheap-eyes formats",
+      "Bid security: 1 000 000 PKR",
+      "Срок исполнения контракта — 27 ноября 2026 года",
+      "планируем",
+      "НМЦК: 3 605 044,00 руб.",
+      "工作温度",
+      "End of fixture."
+    ],
+    "must_not": [
+      "­",
+      " ",
+      "Ð",
+      "Ã",
+      "â€"
+    ],
+    "table_row": "Temperature | −40 | 105",
+    "notes": "&shy; must be dropped, &nbsp; becomes a space."
+  },
+  "cp1251.html": {
+    "format": "html",
+    "outcome": "text",
+    "must": [
+      "Фикстура windows-1251",
+      "Срок исполнения контракта — 27 ноября 2026 года",
+      "Конец."
+    ],
+    "must_not": [
+      "must not appear",
+      "color:red",
+      " "
+    ],
+    "table_row": "Компакт-диск | 1 | 1 098,00",
+    "notes": "charset only in <meta http-equiv>."
+  },
+  "cp1252.html": {
+    "format": "html",
+    "outcome": "text",
+    "must": [
+      "“Agreement”",
+      "Supplier’s margin",
+      "February 2019"
+    ],
+    "must_not": [
+      "bazadebezolkohpepadr",
+      "Field: Page",
+      "example.invalid",
+      "�"
+    ],
+    "table_row": null,
+    "notes": "Same shape as the SEC EX-10.1 page: windows-1252 quotes 0x93/0x94/0x92, injected script, page comments, noscript pixel."
+  },
+  "refused.xls": {
+    "format": "xls",
+    "outcome": "refused",
+    "reason": "unsupported format"
+  },
+  "refused.xlsx": {
+    "format": "xlsx",
+    "outcome": "refused",
+    "reason": "unsupported format"
+  },
+  "refused.odt": {
+    "format": "odt",
+    "outcome": "text",
+    "must": [
+      "Fixture: cheap-eyes formats",
+      "Срок исполнения контракта — 27 ноября 2026 года.",
+      "End of fixture."
+    ],
+    "must_not": [],
+    "table_row": "Temperature | −40 | 105",
+    "sections": [],
+    "notes": "Refused by 0.2; read since extraction moved to doclines. The name is kept."
+  },
+  "refused-scan.pdf": {
+    "format": "pdf",
+    "outcome": "refused",
+    "reason": "no usable text layer"
+  },
+  "refused-encrypted.pdf": {
+    "format": "pdf",
+    "outcome": "refused",
+    "reason": "encrypted"
+  },
+  "source.html": {
+    "format": "html",
+    "outcome": "text",
+    "must": [
+      "Fixture: cheap-eyes formats",
+      "Bid security: 1 000 000 PKR",
+      "Срок исполнения контракта — 27 ноября 2026 года",
+      "планируем",
+      "НМЦК: 3 605 044,00 руб.",
+      "工作温度",
+      "End of fixture."
+    ],
+    "must_not": [
+      "­",
+      " ",
+      "Ð",
+      "Ã",
+      "â€"
+    ],
+    "table_row": "Temperature | −40 | 105",
+    "notes": "The source all LibreOffice fixtures were made from; same as utf8.html."
+  },
+  "refused-encrypted.docx": {
+    "format": "docx",
+    "outcome": "refused",
+    "reason": "encrypted",
+    "notes": "Password-protected OOXML: OLE compound file with EncryptionInfo + EncryptedPackage streams, not a ZIP."
+  },
+  "refused-encrypted.doc": {
+    "format": "doc",
+    "outcome": "refused",
+    "reason": "encrypted",
+    "notes": "Word 97-2003 with WordDocument stream, FibBase fEncrypted = 1 (RC4)."
+  },
+  "text.pptx": {
+    "format": "pptx",
+    "outcome": "text",
+    "must": [
+      "Fixture: doclines slides",
+      "Срок исполнения контракта — 27 ноября 2026 года",
+      "Speaker notes for slide one",
+      "Hidden slide text",
+      "End of fixture.",
+      "Notes on the last slide"
+    ],
+    "must_not": [],
+    "table_row": "Temperature | −40 | 105",
+    "sections": ["slide", "notes", "slide", "slide", "slide", "notes"],
+    "markers": ["--- slide 1 ---", "--- notes 1 ---", "--- slide 2 ---", "--- slide 3 (hidden) ---", "--- slide 4 ---", "--- notes 4 ---"],
+    "notes": "Copy of doclines test/fixtures/formats/text.pptx."
+  },
+  "text.ppt": {
+    "format": "ppt",
+    "outcome": "text",
+    "must": [
+      "Fixture: doclines slides",
+      "Срок исполнения контракта — 27 ноября 2026 года",
+      "Speaker notes for slide one",
+      "Hidden slide text",
+      "End of fixture.",
+      "Notes on the last slide"
+    ],
+    "must_not": [],
+    "table_row": null,
+    "sections": ["slide", "notes", "slide", "slide", "slide", "notes"],
+    "markers": ["--- slide 1 ---", "--- notes 1 ---", "--- slide 2 ---", "--- slide 3 (hidden) ---", "--- slide 4 ---", "--- notes 4 ---"],
+    "notes": "Copy of doclines test/fixtures/formats/text.ppt. A PPT table is separate shapes: one cell per line."
+  },
+  "text.odt": {
+    "format": "odt",
+    "outcome": "text",
+    "must": [
+      "Fixture: cheap-eyes formats",
+      "Bid security: 1 000 000 PKR",
+      "Срок исполнения контракта — 27 ноября 2026 года",
+      "планируем",
+      "НМЦК: 3 605 044,00 руб.",
+      "工作温度",
+      "End of fixture."
+    ],
+    "must_not": ["­", " ", "Ð", "Ã", "â€"],
+    "table_row": "Temperature | −40 | 105",
+    "sections": [],
+    "notes": "Copy of doclines test/fixtures/formats/text.odt."
+  },
+  "text.odp": {
+    "format": "odp",
+    "outcome": "text",
+    "must": [
+      "Fixture: doclines slides",
+      "Срок исполнения контракта — 27 ноября 2026 года",
+      "Speaker notes for slide one",
+      "Hidden slide text",
+      "End of fixture.",
+      "Notes on the last slide"
+    ],
+    "must_not": [],
+    "table_row": "Temperature | −40 | 105",
+    "sections": ["slide", "notes", "slide", "slide", "slide", "notes"],
+    "markers": ["--- slide 1 ---", "--- notes 1 ---", "--- slide 2 ---", "--- slide 3 (hidden) ---", "--- slide 4 ---", "--- notes 4 ---"],
+    "notes": "Copy of doclines test/fixtures/formats/text.odp."
+  },
+  "text.epub": {
+    "format": "epub",
+    "outcome": "text",
+    "must": [
+      "Test Author",
+      "Срок исполнения контракта — 27 ноября 2026 года.",
+      "Сноска: срок указан в проекте контракта.",
+      "工作温度：−40 ~ 105 °C",
+      "End of fixture."
+    ],
+    "must_not": ["Ð"],
+    "table_row": "Temperature | −40 | 105",
+    "sections": ["chapter", "chapter", "chapter"],
+    "markers": ["--- chapter 1: Фикстура doclines: книга ---", "--- chapter 2: Глава первая ---", "--- chapter 3: Chapter Two ---"],
+    "notes": "Copy of doclines test/fixtures/formats/text.epub."
+  },
+  "text.fb2": {
+    "format": "fb2",
+    "outcome": "text",
+    "must": [
+      "Фикстура doclines: книга",
+      "Test Author",
+      "Срок исполнения контракта — 27 ноября 2026 года.",
+      "Сноска: срок указан в проекте контракта.",
+      "End of fixture."
+    ],
+    "must_not": ["Ð", "<binary"],
+    "table_row": "Temperature | −40 | 105",
+    "sections": ["chapter", "chapter", "notes"],
+    "markers": ["--- chapter 1: Глава первая ---", "--- chapter 2: Chapter Two ---", "--- notes ---"],
+    "notes": "Copy of doclines test/fixtures/formats/text.fb2."
+  },
+  "mail-mixed.eml": {
+    "format": "eml",
+    "outcome": "text",
+    "must": [
+      "From: Иван Тестов <ivan@example.com>",
+      "Subject: Заявка на поставку — фикстура",
+      "Срок исполнения контракта: 27 ноября 2026 года.",
+      "text.docx (application/vnd.openxmlformats-officedocument.wordprocessingml.document, 6001 bytes)",
+      "(not extracted: unsupported format: image (PNG), no OCR)",
+      "Inner message body text.",
+      "inner.txt (text/plain, 31 bytes)"
+    ],
+    "must_not": ["HTML alternative must not be used", "Inner attachment text (depth 2)"],
+    "table_row": "Temperature | −40 | 105",
+    "sections": ["attachments", "attachment", "attachment", "attachment", "attachments"],
+    "markers": ["--- attachments ---", "--- attachment: text.docx ---", "--- attachment: pixel.png ---", "--- attachment: forwarded.eml ---", "--- attachments ---"],
+    "notes": "Copy of doclines test/fixtures/formats/mail-mixed.eml: text.docx, a PNG (not extracted) and a forwarded message with its own attachment (listed only)."
+  },
+  "text.xlsx": {
+    "format": "xlsx",
+    "outcome": "refused",
+    "reason": "spreadsheets are not read",
+    "notes": "Copy of doclines test/fixtures/formats/text.xlsx: a readable workbook, refused by cheap-eyes."
+  },
+  "refused-encrypted.ppt": {
+    "format": "ppt",
+    "outcome": "refused",
+    "reason": "encrypted",
+    "notes": "Copy of doclines test/fixtures/formats/refused-encrypted.ppt (Apache POI test data, see test/fixtures/NOTICE)."
+  }
+}

@@ -3,7 +3,7 @@
 import { InputError } from './errors.js';
 import { refusedSuffix } from './model-ids.js';
 import { ApiError } from './openrouter.js';
-import { MODES } from './tools.js';
+import { MODEL_MODES } from './tools.js';
 
 const PER_M = 1e6;
 
@@ -134,7 +134,9 @@ export function promptCost(facts, promptTokens) {
 
 // First line of the table: the alias each mode uses when a call names none.
 export function defaultsLine(config) {
-  return `defaults: ${MODES.map((m) => `${m} -> ${config.defaults?.[m] ?? '(not set)'}`).join(', ')}`;
+  const d = config.defaults ?? {};
+  const of = (m) => d[m] ?? (m === 'schema' && d.extract ? `${d.extract} (extract default)` : '(not set)');
+  return `defaults: ${MODEL_MODES.map((m) => `${m} -> ${of(m)}`).join(', ')}`;
 }
 
 export function accountLine(account) {

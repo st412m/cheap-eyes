@@ -1,0 +1,137 @@
+{
+  "_about": "Synthetic bench suite of cheap-eyes: format fixtures from test/fixtures/formats and three text files. Expected answers were written by hand from these files. A private suite uses the same layout (cheap-eyes bench --suite DIR).",
+  "cases": [
+    {
+      "id": "extract-log-power",
+      "mode": "extract",
+      "files": ["files/service.log"],
+      "task": "Everything about the power supply: outages, restorations, voltage problems.",
+      "expect": { "lines": ["L3", "L6", "L10"], "allowed": ["L4", "L7", "L11"] }
+    },
+    {
+      "id": "extract-pdf-money",
+      "mode": "extract",
+      "files": ["../fixtures/formats/text.pdf"],
+      "task": "Lines that state an amount of money.",
+      "expect": { "lines": ["L2", "L5"] }
+    },
+    {
+      "id": "extract-docx-table-row",
+      "mode": "extract",
+      "files": ["../fixtures/formats/text.docx"],
+      "task": "The table row with the operating temperature range.",
+      "expect": { "lines": ["L8"], "allowed": ["L6", "L7"] }
+    },
+    {
+      "id": "schema-text-terms",
+      "mode": "schema",
+      "files": ["files/supply-terms.md"],
+      "schema": {
+        "supplier": "string",
+        "delivery_days": "number — срок поставки, дней",
+        "warranty_months": "number",
+        "items": [{ "name": "string", "bags": "number" }],
+        "penalty_rate": "string — неустойка за просрочку"
+      },
+      "expect": {
+        "supplier": "Example Trading",
+        "delivery_days": { "conflict": [30, 45] },
+        "warranty_months": { "any": [12, "12 months"] },
+        "items": [
+          { "name": "Flour", "bags": 20 },
+          { "name": "Sugar", "bags": 15 },
+          { "name": "Salt", "bags": 4 }
+        ],
+        "penalty_rate": null
+      }
+    },
+    {
+      "id": "schema-doc-tender",
+      "mode": "schema",
+      "files": ["../fixtures/formats/text.doc"],
+      "schema": {
+        "bid_security": { "amount": "number", "currency": "string" },
+        "contract_deadline": "date — срок исполнения контракта",
+        "nmck_rub": "number — НМЦК, руб.",
+        "supplier_name": "string"
+      },
+      "expect": {
+        "bid_security": { "amount": 1000000, "currency": "PKR" },
+        "contract_deadline": "2026-11-27",
+        "nmck_rub": 3605044,
+        "supplier_name": null
+      }
+    },
+    {
+      "id": "schema-rtf-instruction",
+      "mode": "schema",
+      "files": ["../fixtures/formats/cp1251-hand.rtf"],
+      "schema": {
+        "min_age": "number — минимальный возраст",
+        "temperature": { "min_c": "number", "max_c": "number" },
+        "flour_rows": "number — рядов мешков муки",
+        "approved_by": "string — кем утверждена"
+      },
+      "expect": {
+        "min_age": 18,
+        "temperature": { "min_c": -40, "max_c": 105 },
+        "flour_rows": 8,
+        "approved_by": null
+      }
+    },
+    {
+      "id": "schema-html-agreement",
+      "mode": "schema",
+      "files": ["../fixtures/formats/cp1252.html"],
+      "schema": {
+        "agreement_date": "date",
+        "supplier_margin_percent": "number",
+        "governing_law": "string"
+      },
+      "expect": {
+        "agreement_date": "2019-02-21",
+        "supplier_margin_percent": 75,
+        "governing_law": null
+      }
+    },
+    {
+      "id": "schema-text-blank-template",
+      "mode": "schema",
+      "files": ["files/bid-form.md"],
+      "schema": {
+        "employer": "string",
+        "bid_validity": "date",
+        "adjudicator_hourly_fee": "string",
+        "bid_security_pkr": "number",
+        "customer": "string — заказчик",
+        "contract_number": "string — номер договора",
+        "opening_date": "date — дата вскрытия конвертов",
+        "bid_language": "string"
+      },
+      "expect": {
+        "employer": null,
+        "bid_validity": null,
+        "adjudicator_hourly_fee": null,
+        "bid_security_pkr": 1000000,
+        "customer": null,
+        "contract_number": null,
+        "opening_date": null,
+        "bid_language": "English"
+      }
+    },
+    {
+      "id": "grep-html-table",
+      "mode": "grep",
+      "files": ["../fixtures/formats/utf8.html"],
+      "grep": { "pattern": "Temperature|Voltage", "context": 0 },
+      "expect": { "matches": 2 }
+    },
+    {
+      "id": "draft-rtf-summary",
+      "mode": "draft",
+      "files": ["../fixtures/formats/lo-export.rtf"],
+      "task": "Summarise the document in three lines.",
+      "expect": {}
+    }
+  ]
+}

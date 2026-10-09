@@ -8,7 +8,7 @@ import path from 'node:path';
 import { RESULT_ID_RE } from './tools.js';
 
 const ID_TIME_RE = /^(\d{4})-(\d{2})-(\d{2})_(\d{2})(\d{2})(\d{2})-/;
-const FILE_RE = /^(\d{4}-\d{2}-\d{2}_\d{6}-(?:extract|draft|edits)-[0-9a-f]{6})\.(md|check\.json)$/;
+const FILE_RE = /^(\d{4}-\d{2}-\d{2}_\d{6}-(?:extract|draft|edits|grep|schema)-[0-9a-f]{6})\.(md|check\.json|sources)$/;
 const TMP_RE = /\.tmp-[0-9a-f]{8}$/;
 
 // id → { controller, promise, progress: { done, total } }
@@ -94,8 +94,18 @@ export function statusOf(id, check) {
   return check?.status ?? 'unknown';
 }
 
+// Bytes of the regular files directly in a <id>.sources directory (it has no subdirectories).
+async function dirBytes(dir) {
+  let total = 0;
+  for (const name of await fs.readdir(dir).catch(() => [])) {
+    const st = await fs.lstat(path.join(dir, name)).catch(() => null);
+    if (st?.isFile()) total += st.size;
+  }
+  return total;
+}
+
 /**
- * The store is the server's own cache: drop results older than `retentionDays`, then
+ * The store is the server's own cache (sources folders included): drop results older than `retentionDays`, then
  * the oldest ones while the store is above `maxMb`. Running jobs are never touched.
  */
 export async function pruneResults(resultsDir, { retentionDays, maxMb, now = Date.now() }) {
@@ -127,16 +137,23 @@ export async function pruneResults(resultsDir, { retentionDays, maxMb, now = Dat
     } catch {
       continue;
     }
-    if (!st.isFile()) continue;
+    let size;
+    if (m[2] === 'sources') {
+      if (!st.isDirectory()) continue;
+      size = await dirBytes(full);
+    } else {
+      if (!st.isFile()) continue;
+      size = st.size;
+    }
     const e = byId.get(m[1]) ?? { id: m[1], time: idTime(m[1]), files: [], bytes: 0 };
     e.files.push(full);
-    e.bytes += st.size;
+    e.bytes += size;
     byId.set(m[1], e);
   }
   const entries = [...byId.values()].filter((e) => !running.has(e.id)).sort((a, b) => a.time - b.time || a.id.localeCompare(b.id));
   const deleted = [];
   const drop = async (e) => {
-    for (const f of e.files) await fs.rm(f, { force: true });
+    for (const f of e.files) await fs.rm(f, { force: true, recursive: true });
     deleted.push(e.id);
   };
   const cutoff = now - retentionDays * 86400e3;

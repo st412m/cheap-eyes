@@ -17,6 +17,8 @@ jobs:
           node-version: 24
       # The scanner imports only src/mask.js, which has no dependencies.
       - run: node tools/scan-secrets.mjs
+      # One version in package.json, server.json, the add-on and the Dockerfiles; server.json limits.
+      - run: node tools/check-release.mjs
 
   test:
     strategy:

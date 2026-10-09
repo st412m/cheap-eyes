@@ -41,11 +41,13 @@ jq '
     daily_budget_usd: .daily_budget_usd,
     results_retention_days: .results_retention_days,
     export_retention_days: .export_retention_days,
-    time: {default_tz: (if (.time_default_tz | nonempty) then .time_default_tz else "UTC" end)}
+    time: {default_tz: (if (.time_default_tz | nonempty) then .time_default_tz else "UTC" end)},
+    url_input: (if .url_input == false then false else true end)
   }
   + (if (.max_price_usd_per_mtok.in != null) and (.max_price_usd_per_mtok.out != null)
      then {max_price_usd_per_mtok: {in: .max_price_usd_per_mtok.in, out: .max_price_usd_per_mtok.out}} else {} end)
   + (if (.export_dir | nonempty) then {write_roots: [.export_dir], export_dir: .export_dir} else {} end)
+  + (if (.url_contact | nonempty) then {url_contact: .url_contact} else {} end)
 ' "${OPTIONS}" > "${CONFIG}"
 
 export CHEAP_EYES_CONFIG="${CONFIG}"
@@ -58,7 +60,7 @@ PROXY="$(opt .https_proxy)"
 if [ -n "${PROXY}" ]; then
     export HTTPS_PROXY="${PROXY}"
     export NODE_USE_ENV_PROXY=1
-    bashio::log.info "outbound HTTPS goes through the configured proxy"
+    bashio::log.info "outbound HTTPS (OpenRouter, https:// URLs) goes through the configured proxy"
 fi
 
 # debug/trace: print the resolved settings (no secrets) before starting.

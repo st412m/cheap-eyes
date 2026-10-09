@@ -1,5 +1,5 @@
 name: cheap-eyes
-version: "0.1.0"
+version: "0.2.0"
 slug: cheap_eyes
 description: MCP server that hands bulk reading to cheap OpenRouter models, masks secrets and checks every answer against the source.
 url: https://github.com/st412m/cheap-eyes
@@ -40,6 +40,7 @@ options:
     extract: fast
     draft: fast
     edits: fast
+    schema: long
   max_price_usd_per_mtok: {}
   daily_budget_usd: 1.0
   read_roots:
@@ -50,6 +51,7 @@ options:
   export_retention_days: 0
   time_default_tz: UTC
   https_proxy: ""
+  url_input: true
   log_level: info
 schema:
   openrouter_key: password
@@ -62,6 +64,7 @@ schema:
     extract: str?
     draft: str?
     edits: str?
+    schema: str?
   max_price_usd_per_mtok:
     in: float(0.000001,)?
     out: float(0.000001,)?
@@ -73,4 +76,6 @@ schema:
   export_retention_days: int(0,)
   time_default_tz: str
   https_proxy: str?
+  url_input: bool
+  url_contact: str?
   log_level: list(trace|debug|info|notice|warning|error|fatal)

@@ -3,13 +3,17 @@
 import fs from 'node:fs';
 import { parseArgs } from 'node:util';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
+import { CappedLedger, DEFAULT_SUITE, loadSuite, renderMarkdown, runBench, suiteRoots } from './bench.js';
+import { ledgerFor } from './budget.js';
 import { checkConfig } from './check-config.js';
 import { loadConfig, resolveReadRoots } from './config.js';
 import { bindDescription, DEFAULT_HOST, startHttp, validateToken } from './http.js';
 import { OpenRouter } from './openrouter.js';
 import { startMaintenance } from './maintenance.js';
 import { createServer } from './server.js';
+import { eyesRun, resolveModelChoice } from './run.js';
 import { modelsReport } from './stats.js';
+import { MODES } from './tools.js';
 import { readUsage } from './usage.js';
 import { VERSION } from './version.js';
 
@@ -24,6 +28,10 @@ Usage:
   cheap-eyes check-config              validate config, print resolved settings
   cheap-eyes models [--candidates [--min-context N] [--max-price-in USD]]
                                        model table from OpenRouter (USD per 1M tokens)
+  cheap-eyes bench [--suite DIR] [--models a,b] [--modes extract,schema] [--repeat N]
+                   [--out FILE] [--max-usd USD]
+                                       run a suite with expected answers through eyes_run;
+                                       Markdown table to stdout, JSON to --out
   cheap-eyes --version | --help
 `;
 
@@ -101,6 +109,79 @@ async function modelsCommand(rest) {
   }
 }
 
+// The bench: real eyes_run calls (cost, daily budget, usage log) on a fixed suite.
+async function benchCommand(rest) {
+  let opts;
+  try {
+    opts = parseArgs({
+      args: rest,
+      options: {
+        suite: { type: 'string' },
+        models: { type: 'string' },
+        modes: { type: 'string' },
+        repeat: { type: 'string' },
+        out: { type: 'string' },
+        'max-usd': { type: 'string' },
+      },
+    }).values;
+  } catch (e) {
+    console.error(`cheap-eyes: ${e.message}\n\n${USAGE}`);
+    return 2;
+  }
+  const list = (v) => (v === undefined ? undefined : v.split(',').map((x) => x.trim()).filter(Boolean));
+  const repeat = opts.repeat === undefined ? 1 : Number(opts.repeat);
+  const maxUsd = opts['max-usd'] === undefined ? null : Number(opts['max-usd']);
+  const modes = list(opts.modes);
+  if (!Number.isInteger(repeat) || repeat < 1) return usageError('--repeat must be a positive integer');
+  if (maxUsd !== null && !(maxUsd > 0)) return usageError('--max-usd must be a positive number');
+  if (modes && modes.some((m) => !MODES.includes(m))) return usageError(`--modes: one of ${MODES.join(', ')}`);
+  let loaded;
+  let suite;
+  try {
+    loaded = loadConfig();
+    if (opts.suite === undefined && !fs.existsSync(DEFAULT_SUITE)) {
+      console.error('cheap-eyes: the default suite (test/bench) ships with the repository, not the npm package; pass --suite DIR');
+      return 2;
+    }
+    suite = loadSuite(opts.suite ?? DEFAULT_SUITE);
+  } catch (e) {
+    if (e.name !== 'ConfigError' && e.name !== 'InputError') throw e;
+    console.error(`cheap-eyes: ${e.message}`);
+    return 1;
+  }
+  const { config } = loaded;
+  const used = [...new Set(suite.cases.filter((c) => !modes || modes.includes(c.mode)).map((c) => c.mode))];
+  let models = list(opts.models);
+  if (!models) models = [...new Set(used.filter((m) => m !== 'grep').map((m) => config.defaults[m] ?? (m === 'schema' ? config.defaults.extract : undefined)).filter(Boolean))];
+  const needModel = used.some((m) => m !== 'grep');
+  try {
+    for (const m of models) resolveModelChoice(m, 'extract', config);
+  } catch (e) {
+    console.error(`cheap-eyes: ${e.message}`);
+    return 2;
+  }
+  if (needModel && models.length === 0) return usageError('no model: pass --models or set defaults in the config');
+  if (needModel && !process.env.CHEAP_EYES_OPENROUTER_KEY) {
+    console.error('cheap-eyes: OpenRouter key is not set (env CHEAP_EYES_OPENROUTER_KEY)');
+    return 1;
+  }
+  // The suite's folders are the read roots; nothing is exported.
+  const ctx = { config: { ...config, read_roots: suiteRoots(suite), export_dir: undefined }, stateDir: loaded.stateDir, resultsDir: loaded.resultsDir };
+  fs.mkdirSync(loaded.resultsDir, { recursive: true });
+  const ledger = new CappedLedger(ledgerFor(loaded.stateDir.path), maxUsd);
+  const started = new Date().toISOString();
+  const report = await runBench({ suite, models, modes, repeat, ledger, run: (args) => eyesRun(args, ctx, { ledger }), log: (m) => console.error(`cheap-eyes bench: ${m}`) });
+  const full = { suite: suite.dir, started, finished: new Date().toISOString(), models, modes: modes ?? null, repeat, max_usd: maxUsd, ...report };
+  console.log(renderMarkdown(full));
+  if (opts.out) fs.writeFileSync(opts.out, JSON.stringify(full, null, 2) + '\n');
+  return report.aborted ? 1 : 0;
+}
+
+function usageError(msg) {
+  console.error(`cheap-eyes: ${msg}\n\n${USAGE}`);
+  return 2;
+}
+
 async function serveCommand(rest) {
   let opts;
   try {
@@ -163,6 +244,7 @@ async function main(argv) {
   }
   if (cmd === 'models') return modelsCommand(rest);
   if (cmd === 'serve') return serveCommand(rest);
+  if (cmd === 'bench') return benchCommand(rest);
   console.error(`cheap-eyes: unknown command "${cmd}"\n\n${USAGE}`);
   return 2;
 }

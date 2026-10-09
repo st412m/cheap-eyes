@@ -75,9 +75,16 @@ test('stdio server: three tools, stubs answer isError, id is validated, stdout s
     const names = list.result.tools.map((t) => t.name).sort();
     assert.deepEqual(names, ['eyes_result', 'eyes_run', 'eyes_stats']);
     const run = list.result.tools.find((t) => t.name === 'eyes_run');
-    assert.deepEqual(run.inputSchema.required.sort(), ['files', 'mode', 'task']);
-    assert.deepEqual(run.inputSchema.properties.mode.enum, ['extract', 'draft', 'edits']);
+    // task is optional for grep and schema; the handler checks it per mode.
+    assert.deepEqual(run.inputSchema.required.sort(), ['files', 'mode']);
+    assert.deepEqual(run.inputSchema.properties.mode.enum, ['extract', 'draft', 'edits', 'grep', 'schema']);
     assert.equal(run.inputSchema.additionalProperties, false);
+    // Every tool carries a title and all four annotation hints.
+    for (const tool of list.result.tools) {
+      assert.equal(typeof tool.title, 'string', tool.name);
+      assert.equal(tool.annotations.title, tool.title);
+      for (const h of ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint']) assert.equal(typeof tool.annotations[h], 'boolean', `${tool.name}.${h}`);
+    }
 
     const unknown = await srv.request('tools/call', { name: 'eyes_result', arguments: { id: '2026-09-26_120000-extract-abcdef' } });
     assert.equal(unknown.result.isError, true);

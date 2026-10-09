@@ -19,6 +19,7 @@ export class Ledger {
     this.loading = null;
     this.spent = 0;
     this.reserved = 0;
+    this.open = 0; // reservations not yet settled
   }
 
   // Load today's spend from the usage log once per UTC day.
@@ -45,6 +46,7 @@ export class Ledger {
       );
     }
     this.reserved += amount;
+    this.open += 1;
     return { amount, day: this.day, settled: false };
   }
 
@@ -53,7 +55,9 @@ export class Ledger {
     handle.settled = true;
     // A cost we cannot read counts as the full reservation.
     const cost = typeof actual === 'number' && Number.isFinite(actual) && actual >= 0 ? actual : handle.amount;
-    this.reserved = Math.max(0, this.reserved - handle.amount);
+    // With no reservation left open the sum is exactly 0 (no floating-point residue).
+    this.open -= 1;
+    this.reserved = this.open === 0 ? 0 : Math.max(0, this.reserved - handle.amount);
     if (handle.day === this.day) this.spent += cost;
   }
 }

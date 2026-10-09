@@ -2,9 +2,9 @@
 
 **Cheap eyes for an expensive agent.**
 
-An AI agent's context is expensive. When it reads a big log, a long doc or a whole code
-tree, it burns that context on lines it mostly doesn't need. cheap-eyes is an MCP
-server that hands the reading to a cheap model. It then checks every line of that
+An AI agent's context is expensive. When it reads a big log, a long doc, a web page or a
+whole code tree, it burns that context on lines it mostly doesn't need. cheap-eyes is
+an MCP server that hands the reading to a cheap model. It then checks every line of that
 model's answer against the source, so the agent gets back a short answer it can trust.
 
 ## What it looks like
@@ -50,7 +50,8 @@ flagged L9 as `bad`. The agent sees that before it relies on the answer.
 |---|---|
 | Runtime | Node.js ≥ 22.17, or Docker, or Home Assistant OS / Supervised |
 | Architecture (Home Assistant app) | amd64, aarch64 |
-| Network | outbound HTTPS to `openrouter.ai`; for claude.ai, a TLS reverse proxy reachable from the internet |
+| Network | outbound HTTPS to `openrouter.ai`, and to the web pages you name in a job; for claude.ai, a TLS reverse proxy reachable from the internet |
+| Disk | about 56 MB installed, 33 MB of it `pdfjs-dist` with its CMaps and fonts; the optional `@napi-rs/canvas` adds a native binary of about 37 MB that text extraction does not need (`npm install --omit=optional` skips it) |
 | OpenRouter | an API key with its own daily limit |
 
 ## Installation
@@ -144,6 +145,17 @@ what you want back:
   Values that aren't in those lines, and lines with no citation, are flagged.
 - **edits** when you want fixes proposed. You get JSON edits whose old text is checked
   against the file. cheap-eyes never applies them.
+- **schema** when you want fields filled: a JSON schema in, the same JSON out with a
+  line ref and a verbatim quote for every value. Conflicting values are reported, not
+  resolved.
+- **grep** when you know the exact pattern: matching windows, no model, $0.
+
+Files can be text, HTML, PDF (with a text layer), Word (DOCX, DOC), RTF, PowerPoint
+(PPTX, PPT), OpenDocument text and presentations (ODT, ODP), EPUB, FB2 and mail (EML,
+MSG, attachments included), or an `http(s)` URL that the server fetches itself.
+Spreadsheets and scans are refused with the reason. Refs name the page, slide, chapter
+or attachment of a line: `L40 (slide 3)`, `L12 (attachment: offer.pdf, p.2)`
+([formats](https://github.com/st412m/cheap-eyes/blob/main/docs/formats.md)).
 
 Prompts you might type (the files must lie inside your `read_roots`):
 
@@ -152,15 +164,43 @@ Prompts you might type (the files must lie inside your `read_roots`):
 - *"Have cheap-eyes draft a summary of /home/me/notes/deploy.md: versions, ports,
   backup times."*
 - *"Use eyes_run in edits mode to fix the dead links in /home/me/notes/\*.md."*
+- *"Use eyes_run in schema mode on /home/me/docs/tender.pdf: customer, maximum price,
+  deadline, and the list of items with quantities."*
 
 What each check catches and misses:
 [checks](https://github.com/st412m/cheap-eyes/blob/main/docs/checks.md).
 
+## When to use cheap-eyes and when grep
+
+cheap-eyes pays off for **reading by meaning over large text**: logs, archives, long
+documents, web pages, "everything about X", chronologies. For **exact lookups** — a key,
+which blocks contain X, a list by a field, a value in a table — and for files under
+about 30 KB, grep, a ranged read or code is cheaper and more reliable. That is why
+spreadsheets are not read at all.
+
+On a benchmark of 2026-09-30 with independent ground truth:
+
+- An 887 KB log archive, task "everything about power": recall 96 %, precision 100 %,
+  $0.08, about 12k tokens of the agent's context instead of about 227k for reading it
+  whole.
+- A structural task over Home Assistant automations ("who sends to Telegram"):
+  precision 41 % with a green check. The check catches invented lines, not wrongly
+  chosen ones.
+
+A snippet for `CLAUDE.md` or your Claude settings:
+
+```
+Reading by meaning over large text (logs, archives, long documents, web pages, "everything about X") → cheap-eyes eyes_run (extract/draft; fields → schema). Exact values, structure, small files (< ~30 KB) → grep / ranged read (no model: eyes_run mode grep). Verify any value from cheap-eyes against the source (eyes_result source) before relying on it.
+```
+
+To compare models on your own documents, run
+[`cheap-eyes bench`](https://github.com/st412m/cheap-eyes/blob/main/docs/bench.md).
+
 ## Tools
 
 - `eyes_run` — does the job and returns a short, checked header.
-- `eyes_result` — reads a stored result: pages, grep, the full check report; cancels a
-  running job.
+- `eyes_result` — reads a stored result: pages, grep, the check report, the source text
+  the model was given; cancels a running job.
 - `eyes_stats` — spend today and all time, your key's status; on request, the model
   table.
 
@@ -191,9 +231,14 @@ stops calls before they would go over. More:
 
 - **The check proves quotes are real, not that the answer is complete.** A relevant
   line the model skipped is not flagged.
-- **Text only.** PDFs and other binaries are refused, not converted.
-- **Size caps.** A file over 2 MB is refused, never truncated; a job is capped at
-  5 MB after filtering and 200 files.
+- **No OCR.** Scanned PDFs are refused with the reason; layout and images are lost in
+  extraction.
+- **No spreadsheets.** Excel and OpenDocument spreadsheets are refused: questions about
+  a table are exact lookups, which grep or code answers and a model reading the table
+  as text gets wrong.
+- **Size caps.** A text file (or the text extracted from a document) over 2 MB is
+  refused, never truncated; a document over 50 MB and a URL over 10 MB likewise; a job
+  is capped at 5 MB after filtering and 200 files.
 - **No reduce pass for `draft`.** With several chunks, each chunk's notes come back
   under their own header.
 - **The hook covers Claude Code's `Read` tool only.** Shell commands are not
@@ -217,8 +262,10 @@ More: [troubleshooting](https://github.com/st412m/cheap-eyes/blob/main/docs/trou
 - The model gets no tools; everything it returns is framed as untrusted output.
 - Only files inside `read_roots` are read, after resolving symlinks; `.env*`, keys,
   `secrets.yaml`, databases and `.git` are always refused.
-- Secrets are masked before anything leaves the machine; the only host contacted is
+- Secrets are masked before anything leaves the machine; model calls go only to
   `openrouter.ai`, with Zero Data Retention required.
+- URLs in a job are fetched by the server with private and local addresses refused,
+  also against DNS rebinding.
 - The server writes nowhere outside its own state folder unless you opt into export.
 - In HTTP mode the token works as a password. It needs at least 32 characters and is
   never logged; put TLS in front.
@@ -236,10 +283,27 @@ More: [security](https://github.com/st412m/cheap-eyes/blob/main/docs/security.md
   [results](https://github.com/st412m/cheap-eyes/blob/main/docs/results.md),
   [security](https://github.com/st412m/cheap-eyes/blob/main/docs/security.md),
   [hook](https://github.com/st412m/cheap-eyes/blob/main/docs/hook.md),
+  [formats](https://github.com/st412m/cheap-eyes/blob/main/docs/formats.md),
+  [bench](https://github.com/st412m/cheap-eyes/blob/main/docs/bench.md),
   [troubleshooting](https://github.com/st412m/cheap-eyes/blob/main/docs/troubleshooting.md),
   [internals](https://github.com/st412m/cheap-eyes/blob/main/docs/internals.md)
 - [Home Assistant app](https://github.com/st412m/cheap-eyes/blob/main/ha-addon/cheap_eyes/DOCS.md)
 - [Changelog](https://github.com/st412m/cheap-eyes/blob/main/CHANGELOG.md)
+
+## Releasing
+
+For the maintainer. One version goes into `package.json`, `server.json` (`version`
+and `packages[0].version`), the app's `config.yaml` and `Dockerfile`, the root
+`Dockerfile` and `compose.example.yaml`; `node tools/check-release.mjs` checks it, and CI
+runs it.
+
+1. `npm publish`
+2. `mcp-publisher login github`
+3. `mcp-publisher publish` — reads `server.json`; the registry name
+   `io.github.st412m/cheap-eyes` matches `mcpName` in `package.json`.
+4. The Home Assistant app installs the package from npm, so its new version goes out
+   only after step 1.
+5. Push.
 
 ## Prior art
 

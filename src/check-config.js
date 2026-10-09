@@ -71,12 +71,16 @@ export async function checkConfig(opts = {}) {
       out.push(`  ${a}: ${m.ids.join(', ')}${params.length ? `  params: ${JSON.stringify(m.params)}` : ''}`);
     }
   }
-  out.push(`defaults:       extract=${c.defaults.extract ?? '-'}  draft=${c.defaults.draft ?? '-'}  edits=${c.defaults.edits ?? '-'}`);
+  out.push(`defaults:       extract=${c.defaults.extract ?? '-'}  draft=${c.defaults.draft ?? '-'}  edits=${c.defaults.edits ?? '-'}  schema=${c.defaults.schema ?? `(extract: ${c.defaults.extract ?? '-'})`}`);
   out.push(`raw model ids:  ${c.allow_raw_model_ids ? 'allowed' : 'refused'}`);
   out.push(`price cap:      ${c.max_price_usd_per_mtok ? `in $${c.max_price_usd_per_mtok.in} / out $${c.max_price_usd_per_mtok.out} per 1M tokens` : 'none'}`);
   out.push(`max context:    ${c.max_context ?? 'live (from OpenRouter)'}`);
   out.push(`daily budget:   ${c.daily_budget_usd === null ? 'off (null)' : `$${c.daily_budget_usd}`}`);
   out.push(`limits:         file ${c.max_file_bytes} B, job ${c.max_job_bytes} B, ${c.max_files} files, concurrency ${c.concurrency}, timeout ${c.timeout_s} s`);
+  out.push(`documents:      raw ${c.max_doc_bytes} B (max_doc_bytes), extraction timeout ${c.extract_timeout_s} s`);
+  out.push(
+    `url input:      ${c.url_input ? `on, timeout ${c.url_timeout_s} s, max ${c.max_url_bytes} B per URL; contact ${c.url_contact || 'none (url_contact)'}` : 'off (url_input: false)'}`,
+  );
   out.push(`mask extra:     ${c.mask.extra_patterns.length} pattern(s)`);
   out.push(`hook max bytes: ${c.hook.max_bytes}`);
   out.push(`default tz:     ${c.time.default_tz}`);

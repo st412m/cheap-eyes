@@ -17,13 +17,31 @@ through [`eyes_result`](tools.md#eyes_result). Writing into your folders is opti
 | Docker | `/data/results` in the `/data` volume |
 | Home Assistant app | `/data/results` inside the app (excluded from HA backups) |
 
-Each job is `<id>.md` + `<id>.check.json`, id `YYYY-MM-DD_HHMMSS-<mode>-<hash>` (UTC).
+Each job is `<id>.md` + `<id>.check.json`, id `YYYY-MM-DD_HHMMSS-<mode>-<hash>` (UTC),
+plus `<id>.sources/` when it keeps [source copies](#source-copies).
+
+## Source copies
+
+For every input that is not plain text, every URL, and every input of a `schema`
+job, the result keeps the text the model was given, so a quote can be checked later
+without the original file or page:
+
+| File | What it holds |
+|---|---|
+| `<n>.txt` | The extracted, normalised, masked text, numbered exactly as sent (`L12\| …`), with the page and section marker lines. |
+| `<n>.json` | The marker lines, the page table of a PDF (`page_starts`) and the sections (`sections`: `kind`, `n`, `label`, `start`, `end`, 1-based lines, `end` inclusive) that give the places in refs. |
+| `index.json` | Per source: `name`, `kind` (`file` or `url`), the path or the URL (query values masked), the final URL after redirects, content type, format, size, sha256 of the raw input, fetch time, pages, lines. |
+
+`eyes_result {id, source: "<name>"}` pages and greps it (see
+[tools](tools.md#eyes_result)). Plain local text files of `extract`, `draft` and
+`edits` jobs get no copy: the file itself is the source. Source copies are pruned with
+their result and count toward `results_max_mb`.
 
 ## The usage log
 
 The usage log `usage.jsonl` next to the results store holds times, aliases, model ids,
-file names and sizes, tokens, cost and check counts — no task text, no content, no
-model output. `eyes_stats` and the model table read it.
+file names and sizes (for a URL only the host), tokens, cost and check counts — no task
+text, no content, no model output. Bench runs are logged like any `eyes_run`. `eyes_stats` and the model table read it.
 
 ## Export
 

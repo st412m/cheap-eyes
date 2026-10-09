@@ -1,0 +1,356 @@
+{
+  "_about": "Real-world schema shapes used for the private acceptance suite of cheap-eyes 0.2 (field descriptions only, no document content). The schema parser must accept every entry as is.",
+  "schemas": {
+    "01-tender-en": {
+      "procuring_agency": "string — название закупающей организации",
+      "subject": "string — предмет закупки",
+      "procedure": "string — тип процедуры",
+      "bid_security": {
+        "amount": "number",
+        "currency": "string",
+        "accepted_forms": [
+          "string"
+        ]
+      },
+      "submission_deadline": "datetime — срок подачи заявок",
+      "bid_validity_days": "number — срок действия заявки, дней",
+      "performance_guarantee": {
+        "amount": "number",
+        "currency": "string"
+      },
+      "hardware_warranty": "string — гарантийный срок на оборудование",
+      "software_warranty": "string — гарантийный срок на ПО и услуги",
+      "counting_accuracy": {
+        "minimum_percent": "number",
+        "preferred_percent": "number"
+      },
+      "pre_bid_meeting": "datetime — предконкурсное совещание",
+      "max_jv_members": "number — максимум участников консорциума",
+      "min_experience_years": "number — минимальный опыт участника, лет",
+      "estimated_contract_value": "number — НМЦК / оценочная стоимость контракта"
+    },
+    "02-contract-en": {
+      "parties": [
+        {
+          "name": "string",
+          "role": "string — Supplier / Company"
+        }
+      ],
+      "effective_date": "date",
+      "initial_term": "string — основной срок",
+      "renewal": "string — порядок продления",
+      "termination_for_convenience_notice_days": "number",
+      "default_cure_period_days": "number",
+      "supplier_margin": "string — наценка поставщика",
+      "payment_term_initial_invoice": "string — срок оплаты первого счёта",
+      "post_termination_royalty": "string — роялти после расторжения",
+      "governing_law": "string",
+      "exclusivity": "boolean — эксклюзивность поставщика",
+      "initial_beverages": [
+        "string"
+      ],
+      "minimum_order_quantity": "number — минимальный объём заказа"
+    },
+    "03-smpc-en": {
+      "active_substance": "string",
+      "strength": "string — дозировка в таблетке",
+      "recommended_dose": "string",
+      "missed_dose_window_hours": "number — в течение скольких часов можно принять пропущенную дозу",
+      "contraindications": [
+        "string"
+      ],
+      "very_common_adverse_reactions": [
+        "string — частота «very common», все степени, Table 2"
+      ],
+      "shelf_life": "string",
+      "storage_conditions": "string",
+      "marketing_authorisation_holder": "string",
+      "marketing_authorisation_number": "string",
+      "date_of_first_authorisation": "date",
+      "pack_size": "string"
+    },
+    "04-regulation-en-de": {
+      "application_dates": [
+        {
+          "scope": "string — что применяется",
+          "date": "date"
+        }
+      ],
+      "administrative_fines": [
+        {
+          "infringement": "string",
+          "max_amount_eur": "number",
+          "max_turnover_percent": "number"
+        }
+      ],
+      "vulnerability_reporting_deadlines": {
+        "early_warning": "string",
+        "vulnerability_notification": "string",
+        "final_report": "string"
+      },
+      "incident_final_report_deadline": "string — финальный отчёт по серьёзному инциденту",
+      "manufacturer_definition": "string",
+      "signed_at": {
+        "place": "string",
+        "date": "date"
+      },
+      "document_retention_years": "number — сколько лет хранить декларацию и техдокументацию",
+      "max_fine_for_consumers_eur": "number"
+    },
+    "05-datasheet-en-zh": {
+      "cpu": {
+        "architecture": "string",
+        "max_clock_mhz": "number"
+      },
+      "rom_kb": "number",
+      "sram_kb": "number",
+      "rtc_sram_kb": "number",
+      "gpio_count": [
+        {
+          "variants": [
+            "string"
+          ],
+          "count": "number"
+        }
+      ],
+      "uart_count": "number",
+      "wifi_standard": "string",
+      "bluetooth": "string",
+      "recommended_supply_voltage": {
+        "min_v": "number",
+        "typ_v": "number",
+        "max_v": "number"
+      },
+      "ambient_temperature": [
+        {
+          "variant": "string",
+          "min_c": "number",
+          "max_c": "number"
+        }
+      ],
+      "deep_sleep_current_ua": "number",
+      "max_wifi_tx_power_dbm": "number — 802.11b",
+      "usb_otg": "boolean — есть ли USB OTG"
+    },
+    "06-paper-en": {
+      "affiliations": [
+        "string"
+      ],
+      "author_count": "number",
+      "strategy_records": "number — записей стратегий в корпусе",
+      "active_tasks": "number — активных задач в основной когорте",
+      "binary_markets": "number",
+      "cleaned_executions": "number",
+      "model_used": {
+        "name": "string",
+        "temperature": "number"
+      },
+      "controlled_cohort_passes": {
+        "direct": "string",
+        "staged": "string"
+      },
+      "real_strategies_passes": "string",
+      "replays": {
+        "scheduled": "number",
+        "completed": "number"
+      },
+      "backtest_period": {
+        "from": "date",
+        "to": "date"
+      },
+      "initial_capital_usdc": "number",
+      "mean_net_roi_pml2_direct_percent": "number",
+      "github_url": "string — ссылка на код"
+    },
+    "07-annual-report-ru": {
+      "operating_assets": [
+        {
+          "asset": "string",
+          "end_of_production_year": "number",
+          "employees": "number"
+        }
+      ],
+      "average_headcount_2025": "number",
+      "ore_mined_mt_2025": "number",
+      "ore_processed_mt_2025": "number",
+      "fatalities_2025": "number",
+      "ltifr_2025": "number",
+      "social_investment_2025": "string",
+      "exploration_drilling_km_2025": "number",
+      "licences_total_2025": "number",
+      "sakhavolfram_plant_capacity": "string",
+      "veduga_plant_capacity": "string",
+      "sredny_ural_plant_capacity": "string",
+      "revenue_2025": "string — выручка"
+    },
+    "08-agency-report-ru": {
+      "head_of_agency": "string",
+      "patents_in_force_end_2025": {
+        "inventions": "number",
+        "utility_models": "number",
+        "industrial_designs": "number"
+      },
+      "applications_2025": {
+        "inventions": "number",
+        "utility_models": "number",
+        "industrial_designs": "number"
+      },
+      "patents_granted_2025": {
+        "inventions": "number",
+        "utility_models": "number",
+        "industrial_designs": "number"
+      },
+      "invention_applications_russian_2025": {
+        "count": "number",
+        "change_vs_2024": "string"
+      },
+      "invention_applications_foreign_2025": {
+        "count": "number",
+        "change_vs_2024": "string"
+      },
+      "alienation_agreements_2025": {
+        "agreements": "number",
+        "objects": "number",
+        "change_vs_2024": "string"
+      },
+      "russia_world_rank_invention_applications": {
+        "applications_thousand": "number",
+        "resident_share_percent": "number"
+      },
+      "share_of_patents_held_by_legal_entities_percent": "number",
+      "agency_founded_year": "number"
+    },
+    "09-standard-ru": {
+      "standard_number": "string",
+      "approved_by": {
+        "body": "string",
+        "order_number": "string",
+        "date": "date"
+      },
+      "effective_date": "date",
+      "developers": [
+        "string"
+      ],
+      "technical_committee": "string",
+      "oks_code": "string",
+      "accident_loss_thresholds": {
+        "natural_gas": "string",
+        "hazardous_liquid": "string",
+        "volatile_liquid": "string"
+      },
+      "operational_report_deadline": "string — оперативное сообщение руководителя об аварии",
+      "commission_formation_deadline": "string — образование комиссии Ростехнадзором",
+      "investigation_duration": "string — срок подготовки акта",
+      "investigation_extension_max": "string — максимальное продление",
+      "operator_share_in_commission_max": "string",
+      "accident_results_letter_deadline": "string — письмо о результатах расследования",
+      "replaced_standard": "string — какой стандарт заменяет"
+    },
+    "10-template-en": {
+      "employer": "string",
+      "bid_submission_deadline": "datetime",
+      "bid_security_amount": "string",
+      "bid_validity": "string",
+      "adjudicator_hourly_fee": "string",
+      "document_revision": "string — версия шаблона",
+      "local_labor_min_share": "string",
+      "bid_security_validity_after_bid_validity_days": "number",
+      "min_bid_preparation_period": "string",
+      "financial_opening_after_technical_results": "string",
+      "standstill_period": "string",
+      "debriefing_request_deadline": "string",
+      "beneficial_ownership_form_deadline": "string",
+      "contract_signing_deadline_days": "number",
+      "performance_security_deadline_days": "number",
+      "employer_payment_term_days": "number — оплата сертифицированных сумм"
+    },
+    "11-procurement-ru-multi": {
+      "customer": "string",
+      "subject": "string",
+      "procedure": "string — способ определения исполнителя",
+      "participant_restriction": "string — ограничение круга участников",
+      "max_contract_price_rub": "number — НМЦК",
+      "nmck_method": "string",
+      "contract_price_rub": "number — цена контракта",
+      "service_deadline": "date — срок оказания услуг",
+      "contract_execution_deadline": "date — срок исполнения контракта",
+      "place_of_service": "string",
+      "payment_term": "string",
+      "acceptance_term": "string",
+      "penalty_rate_supplier_delay": "string — пеня за просрочку исполнителя",
+      "performance_security": "string — обеспечение исполнения контракта",
+      "participant_license_required": "string",
+      "support_period": "string — срок технической поддержки",
+      "items": [
+        {
+          "name": "string",
+          "unit": "string",
+          "quantity": "number",
+          "line_total_rub": "number"
+        }
+      ]
+    },
+    "12-rules-ru": {
+      "document_number": "string",
+      "issuing_ministry": "string",
+      "approved_by_order": {
+        "number": "string",
+        "date": "date"
+      },
+      "effective_date": "date",
+      "replaces": "string",
+      "developers": [
+        "string"
+      ],
+      "max_tank_fill_percent": "number",
+      "tank_cleaning_interval": {
+        "oils_with_additives": "string",
+        "other_products": "string"
+      },
+      "tank_verification_interval": "string",
+      "dispenser_accuracy_class": {
+        "fuel_trk": "number",
+        "oil_mrk": "number"
+      },
+      "underground_pipeline_min_depth_m": "number",
+      "min_staff_for_fuel_receipt": "number",
+      "settling_time_before_measurement_min": "number",
+      "distance_between_cars_at_dispenser_m": {
+        "fueling_to_next": "number",
+        "in_queue_min": "number"
+      },
+      "repeat_briefing": {
+        "workers": "string",
+        "specialists": "string"
+      },
+      "min_distance_to_residential_m": "number"
+    },
+    "13-instruction-ru": {
+      "min_age": "number",
+      "required_briefings": [
+        "string — инструктажи при допуске"
+      ],
+      "repeat_briefing_interval": "string",
+      "hazards": [
+        "string — опасные и вредные факторы"
+      ],
+      "max_cart_speed_kmh": "number",
+      "max_overhang_on_pallet_mm": "number",
+      "glass_container_stack_height": "string",
+      "sugar_stack_clearances": {
+        "between_stacks_m": "number",
+        "stack_to_conveyor_m": "number",
+        "from_walls_m": "number"
+      },
+      "flour_bags_max_rows": {
+        "manual": "number",
+        "mechanized": "number"
+      },
+      "max_manual_lifting_weight_kg": "number — предельная масса груза вручную",
+      "acid_ppe": [
+        "string"
+      ],
+      "cleaning_solution_max_temp_c": "number"
+    }
+  }
+}

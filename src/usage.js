@@ -65,7 +65,7 @@ export function aggregate(records, today) {
       if (r.cost_estimated) s.estimated++;
       s.tokens_in += r.tokens_in ?? 0;
       s.tokens_out += r.tokens_out ?? 0;
-      bump(s.by_alias, r.alias ?? '(raw id)', r);
+      bump(s.by_alias, r.mode === 'grep' ? '(grep, no model)' : (r.alias ?? '(raw id)'), r);
       for (const id of r.models_used ?? []) bump(s.by_model, id, r);
     }
   }

@@ -77,14 +77,34 @@ function makeSchema(platform) {
       export_retention_days: z.number().int().min(0).default(0),
       models: z.record(alias, model).default({}),
       defaults: z
-        .strictObject({ extract: alias.optional(), draft: alias.optional(), edits: alias.optional() })
+        .strictObject({ extract: alias.optional(), draft: alias.optional(), edits: alias.optional(), schema: alias.optional() })
         .default({}),
       max_price_usd_per_mtok: z.strictObject({ in: z.number().positive(), out: z.number().positive() }).optional(),
       max_context: posInt.optional(),
       allow_raw_model_ids: z.boolean().default(false),
       // null switches the local cap off explicitly; absent means the default.
       daily_budget_usd: z.number().positive().nullable().default(1.0),
+      // Plain text files: the file; extracted formats: the extracted text.
       max_file_bytes: posInt.default(2 * MB),
+      // Raw size of a file of any format but plain text before extraction.
+      max_doc_bytes: posInt.default(50 * MB),
+      extract_timeout_s: posInt.default(60),
+      // http(s) URLs in files[]: fetched by the server.
+      url_input: z.boolean().default(true),
+      // A contact added to the User-Agent of URL fetches (some sites refuse
+      // undeclared automated clients). Empty = none. It goes into an HTTP header,
+      // hence the character rules.
+      url_contact: z
+        .string()
+        .default('')
+        .superRefine((v, ctx) => {
+          if (v === '') return;
+          if (v.length > 100) ctx.addIssue({ code: 'custom', message: 'at most 100 characters' });
+          if (!/^[\x20-\x7e]+$/.test(v)) ctx.addIssue({ code: 'custom', message: 'printable ASCII only (no control characters, CR or LF)' });
+          if (/[();]/.test(v)) ctx.addIssue({ code: 'custom', message: 'must not contain "(", ")" or ";"' });
+        }),
+      url_timeout_s: posInt.default(30),
+      max_url_bytes: posInt.default(10 * MB),
       max_job_bytes: posInt.default(5 * MB),
       max_files: posInt.default(200),
       concurrency: posInt.default(3),
@@ -110,7 +130,7 @@ function makeSchema(platform) {
         .default({ default_tz: 'UTC' }),
     })
     .superRefine((cfg, ctx) => {
-      for (const mode of ['extract', 'draft', 'edits']) {
+      for (const mode of ['extract', 'draft', 'edits', 'schema']) {
         const a = cfg.defaults[mode];
         if (a !== undefined && !Object.hasOwn(cfg.models, a)) {
           ctx.addIssue({ code: 'custom', path: ['defaults', mode], message: `alias "${a}" is not defined in models` });

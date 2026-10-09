@@ -1,23 +1,30 @@
 // eyes_run: the input pipeline (spec steps 1–5), model resolution, calls, result.
 import path from 'node:path';
+import { pageRanges } from 'doclines';
 import { BudgetError, ledgerFor } from './budget.js';
 import { InputError } from './errors.js';
 import { expandFiles } from './input/files.js';
 import { compileCheck, grepMatches, withContext } from './input/grep.js';
-import { readTextFile } from './input/read.js';
-import { assignNames, chunkBlocks, estimateTokens, fileHeader, fileItems } from './input/render.js';
+import { readSource, readUrlSource } from './input/extract.js';
+import { writeSources } from './sources.js';
+import { assignNames, chunkBlocks, estimateTokens, fileHeader, fileItems, splitChunk } from './input/render.js';
 import { resolveTimeOptions, timeWindow } from './input/timefilter.js';
 import { Masker } from './mask.js';
 import { capMaxTokens, loadAccount, noUsableModel, promptCost, screenIds, summarizeZdr, worstCaseCost } from './models.js';
 import { ApiError, OpenRouter } from './openrouter.js';
+import { placeOf } from './place.js';
 import { systemPrompt, userMessage } from './prompts.js';
-import { badItems, checkJob, describeItem, summaryLine } from './checks.js';
+import { badItems, checkJob, chunkView, describeItem, summaryLine } from './checks.js';
+import { checkSchemaJob, parseSchema, SCHEMA_PROBLEMS, schemaSummaryLine, schemaTask } from './schema.js';
 import { planExport, writeExport } from './export.js';
-import { FRAME_CLOSE, FRAME_OPEN, neutralize } from './frame.js';
+import { FRAME_CLOSE, FRAME_OPEN, neutralize, SOURCE_CLOSE, SOURCE_OPEN } from './frame.js';
 import { allocateResult, running, writeCheck, writeResult, writeResultText } from './results.js';
 import { appendUsage } from './usage.js';
 
-export const DEFAULT_MAX_TOKENS = 4096;
+// Output cap per chunk when the caller gives none (still capped per model id).
+export const DEFAULT_MAX_TOKENS = { extract: 16000, schema: 8000, draft: 4096, edits: 4096 };
+// A chunk cut by finish_reason "length" is split in two and retried in these modes.
+const RESPLIT_MODES = new Set(['extract', 'edits', 'schema']);
 export const CONTEXT_SHARE = 0.4;
 const HEADER_MAX = 4096;
 const MIN_BUDGET = 256;
@@ -28,7 +35,8 @@ export { FRAME_CLOSE, FRAME_OPEN, neutralize };
 
 // alias (or raw id when allowed) → { alias, label, ids, params }
 export function resolveModelChoice(model, mode, config) {
-  const name = model ?? config.defaults[mode];
+  // schema falls back to the extract default.
+  const name = model ?? config.defaults[mode] ?? (mode === 'schema' ? config.defaults.extract : undefined);
   if (name === undefined) throw new InputError(`no model: pass "model" or set defaults.${mode} in the config`);
   if (Object.hasOwn(config.models, name)) {
     const m = config.models[name];
@@ -66,9 +74,17 @@ function clip(text, max = HEADER_MAX) {
 
 // ---- steps 1–4: independent of the model ----
 
-export async function prepareInput(args, { config, platform = process.platform, now = Date.now() }) {
+// A source copy is kept with the result for extracted formats and URLs always, for
+// plain local text only in schema mode (see sources.js).
+function keepsSource(f, read, mode) {
+  return Boolean(f.url) || read.format !== 'text' || mode === 'schema';
+}
+
+export async function prepareInput(args, { config, platform = process.platform, now = Date.now(), urlDeps }) {
   const { mode } = args;
   if (args.grep) compileCheck(args.grep.pattern, args.grep.ignore_case);
+  // Refused before any file is read.
+  const schema = mode === 'schema' ? parseSchema(args.schema) : null;
   const timeOpts = args.time ? resolveTimeOptions(args.time, config.time.default_tz) : null;
 
   // 1. expand and guard
@@ -81,10 +97,10 @@ export async function prepareInput(args, { config, platform = process.platform, 
   for (const f of files) {
     let read;
     try {
-      read = await readTextFile(f.real, { name: f.given, maxBytes: config.max_file_bytes });
+      read = f.url ? await readUrlSource(f.url, { name: f.given, config, deps: urlDeps, now }) : await readSource(f.real, { name: f.given, config });
     } catch (e) {
       if (e instanceof InputError && !f.literal) {
-        skipped.push({ path: f.given, reason: e.message.replace(/: .*$/, '') });
+        skipped.push({ path: f.given, reason: e.reason ?? e.message.replace(/: .*$/, '') });
         continue;
       }
       throw e;
@@ -96,15 +112,20 @@ export async function prepareInput(args, { config, platform = process.platform, 
       nums = nums.slice(f.range.start - 1, Math.min(f.range.end, total));
     }
     if (timeOpts) nums = timeWindow(read.lines, nums, { ...timeOpts, now, name: f.given });
-    const entries = masker.maskEach(read.lines, nums.map((n) => n - 1));
-    blocks.push({ file: f, lines: read.lines, nums, entries, total, encoding: read.encoding, bytes: read.bytes });
+    // The source copy needs every line masked; the counts still cover only sent lines.
+    const keep = keepsSource(f, read, mode);
+    const entries = masker.maskEach(read.lines, keep ? undefined : nums.map((n) => n - 1));
+    blocks.push({ file: f, lines: read.lines, nums, entries, total, encoding: read.encoding, bytes: read.bytes, read, keep });
   }
   if (blocks.length === 0) throw new InputError('no readable files: all matches were skipped');
   if (args.grep) {
     const texts = blocks.map((b) => b.nums.map((n) => b.entries.get(n - 1).text));
     const hits = await grepMatches(texts, { pattern: args.grep.pattern, ignoreCase: args.grep.ignore_case });
     const context = args.grep.context ?? 3;
-    blocks.forEach((b, i) => (b.nums = withContext(b.nums, hits[i], context)));
+    blocks.forEach((b, i) => {
+      b.matches = hits[i].length;
+      b.nums = withContext(b.nums, hits[i], context);
+    });
   }
   const filtered = Boolean(timeOpts || args.grep || files.some((f) => f.range));
   for (const b of blocks) {
@@ -112,7 +133,7 @@ export async function prepareInput(args, { config, platform = process.platform, 
     b.masked = new Map(b.nums.map((n) => [n - 1, b.entries.get(n - 1).text]));
   }
   const taskMasker = new Masker(config.mask.extra_patterns);
-  const task = taskMasker.maskText(args.task);
+  const task = taskMasker.maskText(schema ? schemaTask(schema, args.task) : (args.task ?? ''));
 
   // 4. names and numbering
   const names = assignNames(blocks.map((b) => b.file), platform);
@@ -120,11 +141,17 @@ export async function prepareInput(args, { config, platform = process.platform, 
   const kept = [];
   const empty = [];
   const sources = new Map(); // name → Map(0-based line → masked text), what the checks compare against
+  const pages = new Map(); // name → first line of each page (PDF), for the `page` field
+  const places = new Map(); // name → doclines sections, for refs shown as L12 (slide 3)
+  const warnings = [];
   blocks.forEach((b, i) => {
     b.name = names[i];
     sources.set(b.name, b.masked);
+    if (b.read.pageStarts) pages.set(b.name, b.read.pageStarts);
+    if (b.read.sections.length) places.set(b.name, b.read.sections);
+    if (b.read.pagesWithoutText.length) warnings.push(`${b.name}: pages without text layer: ${pageRanges(b.read.pagesWithoutText)}`);
     if (b.nums.length === 0) empty.push(b.name);
-    else kept.push({ name: b.name, items: fileItems({ nums: b.nums, masked: b.masked, total: b.total, filtered }) });
+    else kept.push({ name: b.name, items: fileItems({ nums: b.nums, masked: b.masked, total: b.total, filtered, markers: b.read.markers }) });
   });
   if (kept.length === 0) throw new InputError('nothing left after filters (range/time/grep)');
 
@@ -141,16 +168,45 @@ export async function prepareInput(args, { config, platform = process.platform, 
   return {
     mode,
     task,
-    system: systemPrompt(mode),
+    system: mode === 'grep' ? '' : systemPrompt(mode, { markers: kept.some((k) => k.items.some((it) => it.kind === 'marker')) }),
+    schema,
     multi,
     kept,
     sources,
+    pages,
+    places,
+    warnings,
     jobBytes,
     masks: masker.counts,
     taskMasks: taskMasker.counts,
     skipped,
     empty,
-    files: blocks.map((b) => ({ name: b.name, path: b.file.real, bytes: b.bytes, encoding: b.encoding, lines_total: b.total, lines_sent: b.nums.length })),
+    sourceCopies: blocks
+      .filter((b) => b.keep)
+      .map((b) => ({
+        name: b.name,
+        kind: b.file.url ? 'url' : 'file',
+        path: b.file.real,
+        meta: b.read.meta,
+        format: b.read.format,
+        bytes: b.bytes,
+        sha256: b.read.sha256,
+        lines: b.lines.map((_, i) => b.entries.get(i).text),
+        markers: b.read.markers,
+        pageStarts: b.read.pageStarts,
+        sections: b.read.sections,
+      })),
+    files: blocks.map((b) => ({
+      name: b.name,
+      ...(b.file.url ? { url: b.read.meta.url, final_url: b.read.meta.final_url, host: new URL(b.file.url).host } : { path: b.file.real }),
+      bytes: b.bytes,
+      format: b.read.format,
+      encoding: b.encoding,
+      lines_total: b.total,
+      lines_sent: b.nums.length,
+      ...(b.matches !== undefined ? { matches: b.matches } : {}),
+      ...(b.read.pageStarts ? { pages: b.read.pageStarts.length, page_starts: b.read.pageStarts } : {}),
+    })),
     filters: {
       range: files.length === 1 && files[0].range ? files[0].range : null,
       time: timeOpts ? { since: args.time.since ?? null, until: args.time.until ?? null, tz: timeOpts.tz } : null,
@@ -300,6 +356,8 @@ async function runChunk(chunk, plan, run) {
       return {
         requested_id: cand.id,
         model: typeof res.model === 'string' ? res.model : cand.id,
+        // The upstream provider OpenRouter routed to, when the response names it.
+        provider: typeof res.provider === 'string' ? res.provider : null,
         text: contentText(choice0.message),
         finish_reason: choice0.finish_reason ?? null,
         truncated: choice0.finish_reason === 'length',
@@ -357,6 +415,8 @@ function commonLines(input) {
     for (const s of input.skipped.slice(0, 10)) lines.push(`  ${s.path} (${s.reason})`);
     if (input.skipped.length > 10) lines.push(`  … +${input.skipped.length - 10} more (see check.json)`);
   }
+  for (const w of input.warnings.slice(0, 10)) lines.push(w);
+  if (input.warnings.length > 10) lines.push(`… +${input.warnings.length - 10} more warnings (see check.json)`);
   lines.push(`masks: ${countsText(input.masks)}; in task: ${countsText(input.taskMasks)}`);
   const f = input.filters;
   if (f.range) lines.push(`range: L${f.range.start}-L${f.range.end}`);
@@ -391,7 +451,7 @@ export function costNote(rec) {
   return ` (estimated: ${parts.join(', ') || 'partly'})`;
 }
 
-function runHeader(id, { input, choice, rec, outs, checks, text, status, error, hints, exported, exportError, accountNote }) {
+function runHeader(id, { input, choice, rec, outs, checks, text, status, error, hints, resplit = 0, exported, exportError, accountNote }) {
   const done = outs.filter(Boolean);
   const lines = [];
   lines.push(`eyes_run result: ${id}${status === 'done' ? '' : ` — ${status.toUpperCase()}`}`);
@@ -404,13 +464,15 @@ function runHeader(id, { input, choice, rec, outs, checks, text, status, error, 
   lines.push(`mode: ${input.mode}; files: ${input.files.length}; chunks: ${done.length}/${outs.length}`);
   lines.push(`tokens in ${rec.tokens_in} / out ${rec.tokens_out}; cost $${rec.cost.toFixed(6)}${costNote(rec)}; ${rec.ms} ms`);
   const truncated = outs.map((o, i) => (o?.truncated ? i + 1 : null)).filter(Boolean);
+  if (resplit) lines.push(`re-split after truncation: ${resplit} chunk(s)`);
   if (truncated.length) lines.push(`TRUNCATED chunks (finish_reason length): ${truncated.join(', ')}`);
   const other = outs.map((o, i) => (o?.finish_reason && !['stop', 'length'].includes(o.finish_reason) ? `${i + 1}:${o.finish_reason}` : null)).filter(Boolean);
   if (other.length) lines.push(`finish_reason: ${other.join(', ')}`);
   for (const h of hints) if (h) lines.push(h);
   if (checks) {
-    lines.push(summaryLine(checks));
-    const bad = badItems(checks);
+    const schema = checks.mode === 'schema';
+    lines.push(schema ? schemaSummaryLine(checks.summary) : summaryLine(checks));
+    const bad = schema ? checks.items.filter((it) => SCHEMA_PROBLEMS.has(it.status)) : badItems(checks);
     for (const it of bad.slice(0, 10)) lines.push(`  ${describeItem(it)}`);
     if (bad.length > 10) lines.push(`  … +${bad.length - 10} more (eyes_result check: true)`);
   }
@@ -439,6 +501,22 @@ function failureText(e) {
   return `internal error: ${e?.message ?? e}`;
 }
 
+// Per-mode requirements the input schema cannot express.
+function checkModeArgs(args) {
+  if (args.mode === 'grep') {
+    if (!args.grep) throw new InputError('mode grep needs "grep": {"pattern": "…"}');
+    if (args.dry_run) throw new InputError('dry_run is not used with mode grep (it calls no model)');
+    if (args.schema !== undefined) throw new InputError('"schema" is used only with mode schema');
+    return;
+  }
+  if (args.mode === 'schema') {
+    if (args.schema === undefined) throw new InputError('mode schema needs "schema": {"field": "description", …}');
+    return;
+  }
+  if (args.schema !== undefined) throw new InputError('"schema" is used only with mode schema');
+  if (args.task === undefined) throw new InputError(`mode ${args.mode} needs "task"`);
+}
+
 // Probe id for lexical export checks before the real id exists.
 const PROBE_ID = '2000-01-01_000000-extract-000000';
 
@@ -449,15 +527,18 @@ export async function eyesRun(args, ctx, deps = {}) {
   const platform = deps.platform ?? process.platform;
   const nowFn = deps.now ?? (() => Date.now());
   const key = deps.key !== undefined ? deps.key : (process.env.CHEAP_EYES_OPENROUTER_KEY || null);
+  checkModeArgs(args);
+  // grep: no model, no OpenRouter call, no key, no budget.
+  if (args.mode === 'grep') return grepRun(args, ctx, { ...deps, platform, nowFn });
   if (args.dry_run && args.export_to !== undefined) throw new InputError('export_to is not used with dry_run (the request bodies stay in the results store)');
   if (args.dry_run && args.async) throw new InputError('async is not used with dry_run');
   if (args.export_to !== undefined) await planExport({ config, exportTo: args.export_to, id: PROBE_ID, platform });
   if (!args.dry_run && !key) throw new InputError('OpenRouter key is not set (env CHEAP_EYES_OPENROUTER_KEY)');
 
   const choice = resolveModelChoice(args.model, args.mode, config);
-  const requested = args.max_tokens ?? DEFAULT_MAX_TOKENS;
+  const requested = args.max_tokens ?? DEFAULT_MAX_TOKENS[args.mode];
   const or = new OpenRouter({ key, fetch: deps.fetch ?? globalThis.fetch, now: nowFn });
-  const input = await prepareInput(args, { config, platform, now: nowFn() });
+  const input = await prepareInput(args, { config, platform, now: nowFn(), urlDeps: deps.url });
 
   // Live facts: the public ZDR list and, for a real run, the models the account allows
   // (guardrails, privacy settings). In dry_run the ZDR list is the only network call.
@@ -502,6 +583,7 @@ export async function eyesRun(args, ctx, deps = {}) {
     }),
     new Date(nowFn()),
   );
+  await writeSources(resultsDir, id, input.sourceCopies);
 
   const controller = new AbortController();
   if (deps.signal) {
@@ -538,33 +620,81 @@ export async function eyesRun(args, ctx, deps = {}) {
   const res = await job.promise;
   if (res.status !== 'done') {
     const spent = res.rec.cost > 0 ? `; spent $${res.rec.cost.toFixed(6)}${costNote(res.rec)}` : '';
-    throw new InputError(`${res.error} — result ${id} saved as ${res.status} with ${res.outs.length}/${chunks.length} chunk(s)${spent}; read it with eyes_result`);
+    throw new InputError(`${res.error} — result ${id} saved as ${res.status} with ${res.outs.length}/${res.rec.chunks} chunk(s)${spent}; read it with eyes_result`);
   }
   return res;
 }
 
-async function execute({ id, args, ctx, input, choice, plan, run, chunks, job, created, nowFn, platform }) {
+// Chunks whose answer stopped on finish_reason "length" are split in two by lines and
+// both halves run once; a half cut again stays truncated. The cut answers are dropped
+// (their cost and tokens still count). Returns { chunks, outs, failure, dropped, resplit }.
+async function resplitTruncated({ chunks, outs, failure, input, plan, run, config, job }) {
+  if (failure || run.signal.aborted || !RESPLIT_MODES.has(input.mode)) return { chunks, outs, failure, dropped: [], resplit: 0 };
+  const splits = [];
+  outs.forEach((o, i) => {
+    if (!o?.truncated || chunks[i].resplit_of) return;
+    const halves = splitChunk(chunks[i], { multi: input.multi });
+    if (halves) splits.push({ i, halves });
+  });
+  if (splits.length === 0) return { chunks, outs, failure, dropped: [], resplit: 0 };
+  const halves = splits.flatMap(({ i, halves: hs }) =>
+    hs.map((h, k) => {
+      const user = userMessage(h.text, input.task);
+      return { ...h, user, promptTokens: estimateTokens(input.system) + estimateTokens(user), index: `${i + 1}${'ab'[k]}`, resplit_of: i + 1 };
+    }),
+  );
+  job.progress.total += halves.length;
+  let r;
+  try {
+    r = await pool(halves, config.concurrency, (c) => runChunk(c, plan, run), { signal: run.signal, onDone: () => job.progress.done++ });
+  } catch (e) {
+    r = { results: halves.map(() => null), failure: e };
+  }
+  const nextChunks = [];
+  const nextOuts = [];
+  const dropped = [];
+  chunks.forEach((c, i) => {
+    const k = splits.findIndex((x) => x.i === i);
+    if (k < 0) {
+      nextChunks.push(c);
+      nextOuts.push(outs[i]);
+      return;
+    }
+    dropped.push(outs[i]);
+    nextChunks.push(halves[2 * k], halves[2 * k + 1]);
+    nextOuts.push(r.results[2 * k], r.results[2 * k + 1]);
+  });
+  return { chunks: nextChunks.map((c, n) => ({ ...c, index: n + 1 })), outs: nextOuts, failure: r.failure, dropped, resplit: splits.length };
+}
+
+async function execute({ id, args, ctx, input, choice, plan, run, chunks: firstChunks, job, created, nowFn, platform }) {
   const { config, resultsDir } = ctx;
   const t0 = nowFn();
   let results;
   let failure;
   try {
-    ({ results, failure } = await pool(chunks, config.concurrency, (c) => runChunk(c, plan, run), {
+    ({ results, failure } = await pool(firstChunks, config.concurrency, (c) => runChunk(c, plan, run), {
       signal: run.signal,
       onDone: () => job.progress.done++,
     }));
   } catch (e) {
-    results = chunks.map(() => null);
+    results = firstChunks.map(() => null);
     failure = e;
   }
-  const outs = results;
+  const re = await resplitTruncated({ chunks: firstChunks, outs: results, failure, input, plan, run, config, job });
+  const { chunks, outs, dropped, resplit } = re;
+  failure = re.failure;
   const done = outs.filter(Boolean);
+  const billed = [...done, ...dropped];
   const cancelled = run.signal.aborted;
   const status = cancelled ? 'cancelled' : failure ? 'failed' : 'done';
   const error = status === 'done' ? null : cancelled ? 'cancelled' : failureText(failure);
 
   const singleName = input.multi ? null : input.kept[0].name;
-  const checks = checkJob({ mode: args.mode, chunks, outs, sources: input.sources, singleName, spanText });
+  const checks =
+    args.mode === 'schema'
+      ? checkSchemaJob({ schema: input.schema, outs, views: chunks.map((c) => chunkView(c, input.sources, singleName, input.pages, input.places)) })
+      : checkJob({ mode: args.mode, chunks, outs, sources: input.sources, pages: input.pages, places: input.places, singleName, spanText });
   const text = checks.text;
   const hints = outs.map((o, i) => (o && o.text.trim() === '' && o.finish_reason === 'length' ? emptyOutputHint(i + 1) : null));
 
@@ -574,13 +704,15 @@ async function execute({ id, args, ctx, input, choice, plan, run, chunks, job, c
     mode: args.mode,
     alias: choice.alias,
     primary: plan.primary.id,
-    models_used: [...new Set(done.map((o) => o.model))],
-    files: input.files.map((f) => ({ name: f.name, bytes: f.bytes })),
+    models_used: [...new Set(billed.map((o) => o.model))],
+    // A URL is logged by host and size only, never its path or query.
+    files: input.files.map((f) => (f.host ? { name: f.host, bytes: f.bytes, url: true } : { name: f.name, bytes: f.bytes })),
     chunks: chunks.length,
     chunks_done: done.length,
-    tokens_in: done.reduce((s, o) => s + o.tokens_in, 0),
-    tokens_out: done.reduce((s, o) => s + o.tokens_out, 0),
-    cost: done.reduce((s, o) => s + o.cost, 0) + run.extra.cost,
+    tokens_in: billed.reduce((s, o) => s + o.tokens_in, 0),
+    tokens_out: billed.reduce((s, o) => s + o.tokens_out, 0),
+    cost: billed.reduce((s, o) => s + o.cost, 0) + run.extra.cost,
+    ...(resplit ? { resplit } : {}),
     cost_estimated: run.extra.attempts > 0 || run.extra.estimated,
     failed_attempts: run.extra.attempts,
     usage_cost_missing: run.extra.estimated,
@@ -610,12 +742,14 @@ async function execute({ id, args, ctx, input, choice, plan, run, chunks, job, c
     ms: rec.ms,
     files: input.files,
     skipped: input.skipped,
+    warnings: input.warnings,
     empty: input.empty,
     filters: input.filters,
     masks: input.masks,
     task_masks: input.taskMasks,
     chunks: chunks.map((c, i) => ({
       index: c.index,
+      ...(c.resplit_of ? { resplit_of: c.resplit_of } : {}),
       span: c.span,
       lines: c.lines,
       est_prompt_tokens: c.promptTokens,
@@ -623,6 +757,7 @@ async function execute({ id, args, ctx, input, choice, plan, run, chunks, job, c
       ...(outs[i]
         ? {
             model: outs[i].model,
+            provider: outs[i].provider,
             finish_reason: outs[i].finish_reason,
             truncated: outs[i].truncated,
             tokens_in: outs[i].tokens_in,
@@ -648,7 +783,7 @@ async function execute({ id, args, ctx, input, choice, plan, run, chunks, job, c
     try {
       const t = await planExport({ config, exportTo: args.export_to, id, platform });
       if (t) {
-        const plainHeader = runHeader(id, { input, choice, rec, outs, checks, text, status, error, hints, accountNote: plan.accountNote });
+        const plainHeader = runHeader(id, { input, choice, rec, outs, checks, text, status, error, hints, resplit, accountNote: plan.accountNote });
         exported = await writeExport({
           config,
           stateDir: stateDirOf(ctx),
@@ -667,7 +802,7 @@ async function execute({ id, args, ctx, input, choice, plan, run, chunks, job, c
     }
   }
 
-  const header = runHeader(id, { input, choice, rec, outs, checks, text, status, error, hints, exported, exportError, accountNote: plan.accountNote });
+  const header = runHeader(id, { input, choice, rec, outs, checks, text, status, error, hints, resplit, exported, exportError, accountNote: plan.accountNote });
   await writeResultText(resultsDir, id, text);
   await writeCheck(resultsDir, id, meta(header, exported));
   await appendUsage(stateDirOf(ctx), rec);
@@ -715,6 +850,7 @@ async function dryRun(args, ctx, { input, choice, requested, zdr, zdrError }) {
         zdr_error: zdrError,
         files: input.files,
         skipped: input.skipped,
+        warnings: input.warnings,
         empty: input.empty,
         filters: input.filters,
         masks: input.masks,
@@ -724,5 +860,130 @@ async function dryRun(args, ctx, { input, choice, requested, zdr, zdrError }) {
       };
     },
   });
+  await writeSources(resultsDir, id, input.sourceCopies);
   return { id, header, bodies, job: { ...input, chunks: plan.chunks, budget: plan.budget } };
+}
+
+// ---- mode grep: no model ----
+
+// The matched windows as a model would see them, with every file header and the place
+// on lines inside a section ("L123 (p.12)| text", "L40 (slide 3)| text").
+export function grepText(input) {
+  const out = [];
+  for (const k of input.kept) {
+    const sections = input.places.get(k.name);
+    out.push(fileHeader(k.name));
+    for (const it of k.items) {
+      const at = it.kind === 'line' ? placeOf(sections, it.n) : null;
+      out.push(at === null ? it.text : it.text.replace(/^L(\d+)\|/, `L$1 (${at})|`));
+    }
+  }
+  return out.length ? out.join('\n') + '\n' : '';
+}
+
+function framed(head, text, open, close) {
+  const { total, shown } = previewLines(text);
+  const top = clip(`${head}\nresult lines: ${total}${total > shown.length ? ` (first ${shown.length} below; more via eyes_result)` : ''}`, HEADER_MAX - 600);
+  let body = shown.join('\n');
+  const room = HEADER_MAX - Buffer.byteLength(top) - open.length - close.length - 20;
+  if (Buffer.byteLength(body) > room) body = `${Buffer.from(body).subarray(0, Math.max(0, room)).toString('utf8').replace(/�$/, '')}\n…`;
+  return `${top}\n${open}\n${body}\n${close}`;
+}
+
+function grepHeader(id, { input, counts, task, exported, exportError }) {
+  const lines = [`eyes_run result: ${id}`];
+  if (exported?.length) lines.push(`export: ${exported.join(', ')}`);
+  if (exportError) lines.push(`export failed: ${exportError}`);
+  lines.push(`mode: grep (no model call, cost $0); files: ${counts.files}; matches: ${counts.matches}; lines: ${counts.lines}`);
+  if (task) lines.push(`task: ${task.length > 200 ? `${task.slice(0, 200)}…` : task}`);
+  const per = input.files.map((f) => `${f.name} ${f.matches ?? 0}`);
+  lines.push(`matches per file: ${per.slice(0, 10).join(', ')}${per.length > 10 ? ` (+${per.length - 10} files)` : ''}`);
+  lines.push(...commonLines(input));
+  return lines.join('\n');
+}
+
+async function grepRun(args, ctx, deps) {
+  const { config, resultsDir } = ctx;
+  const { platform, nowFn } = deps;
+  if (args.export_to !== undefined) await planExport({ config, exportTo: args.export_to, id: PROBE_ID, platform });
+  const t0 = nowFn();
+  const input = await prepareInput(args, { config, platform, now: nowFn(), urlDeps: deps.url });
+  const text = grepText(input);
+  const counts = {
+    files: input.files.length,
+    matches: input.files.reduce((s, f) => s + (f.matches ?? 0), 0),
+    lines: input.files.reduce((s, f) => s + f.lines_sent, 0),
+  };
+  const created = new Date(nowFn()).toISOString();
+  const id = await allocateResult(resultsDir, 'grep', (rid) => ({ id: rid, status: 'running', kind: 'grep', mode: 'grep', created }), new Date(nowFn()));
+  await writeSources(resultsDir, id, input.sourceCopies);
+  const meta = (header, exported) => ({
+    id,
+    status: 'done',
+    error: null,
+    kind: 'grep',
+    mode: 'grep',
+    created,
+    finished: new Date(nowFn()).toISOString(),
+    cost: 0,
+    files: input.files,
+    skipped: input.skipped,
+    warnings: input.warnings,
+    empty: input.empty,
+    filters: input.filters,
+    masks: input.masks,
+    task_masks: input.taskMasks,
+    counts,
+    export: exported ?? null,
+    header,
+  });
+  const make = (extra) => framed(grepHeader(id, { input, counts, task: input.task, ...extra }), text, SOURCE_OPEN, SOURCE_CLOSE);
+  let exported = null;
+  let exportError = null;
+  if (args.export_to !== undefined || config.export_dir) {
+    try {
+      const t = await planExport({ config, exportTo: args.export_to, id, platform });
+      if (t) {
+        exported = await writeExport({
+          config,
+          stateDir: stateDirOf(ctx),
+          files: [
+            { path: t.md, text },
+            { path: t.check, text: JSON.stringify(meta(make({}), null), null, 2) + '\n' },
+          ],
+          overwrite: Boolean(args.overwrite),
+          resultId: id,
+          platform,
+          now: nowFn(),
+        });
+      }
+    } catch (e) {
+      exportError = e instanceof InputError ? e.message : `internal error: ${e?.message ?? e}`;
+    }
+  }
+  const header = make({ exported, exportError });
+  await writeResultText(resultsDir, id, text);
+  await writeCheck(resultsDir, id, meta(header, exported));
+  const rec = {
+    ts: created,
+    tool: 'eyes_run',
+    mode: 'grep',
+    alias: null,
+    primary: null,
+    model: null,
+    models_used: [],
+    files: input.files.map((f) => (f.host ? { name: f.host, bytes: f.bytes, url: true } : { name: f.name, bytes: f.bytes })),
+    chunks: 0,
+    chunks_done: 0,
+    tokens_in: 0,
+    tokens_out: 0,
+    cost: 0,
+    cost_estimated: false,
+    ms: nowFn() - t0,
+    status: 'done',
+    matches: counts.matches,
+    result_id: id,
+  };
+  await appendUsage(stateDirOf(ctx), rec);
+  return { id, header, text, status: 'done', error: null, input, counts, exported, exportError, rec, outs: [] };
 }

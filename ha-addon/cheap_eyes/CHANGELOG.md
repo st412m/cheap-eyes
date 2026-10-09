@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.0 — 2026-10-09
+
+- Reads HTML, PDF (with a text layer), Word, RTF, PowerPoint, OpenDocument text and
+  presentations, EPUB, FB2 and mail (EML, MSG) files, not only plain text. Refs name
+  the page, slide, chapter or attachment of a line. Spreadsheets, scans and
+  password-protected files are refused with the reason.
+- Web pages: put an `https://` link in a job and the app fetches the page itself.
+  Private and local addresses are always refused. New option `url_input` to turn it
+  off, and an optional `url_contact` for sites that refuse fetches without a contact.
+- Two new modes: `grep` (exact matches, no model, no cost) and `schema` (fill a JSON
+  form from a document, with a quote for every value).
+- The agent can read back the text the model was given (`eyes_result` with `source`)
+  to verify a quote without file access.
+- Longer answers by default; an answer cut by the output limit is retried in two
+  halves.
+- New field under **Default alias per mode**: `schema`, default `long` (empty = the `extract` alias).
+
 ## 0.1.0 — 2026-09-27
 
 First release.

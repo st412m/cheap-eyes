@@ -20,15 +20,21 @@
       "params": { "reasoning": { "effort": "none" } }
     }
   },
-  "defaults": { "extract": "fast", "draft": "fast", "edits": "fast" },
+  "defaults": { "extract": "fast", "draft": "fast", "edits": "fast", "schema": "long" },
   "max_price_usd_per_mtok": { "in": 1.0, "out": 4.0 },
   "allow_raw_model_ids": false,
   "daily_budget_usd": 1.0,
   "max_file_bytes": 2097152,
+  "max_doc_bytes": 52428800,
+  "extract_timeout_s": 60,
   "max_job_bytes": 5242880,
   "max_files": 200,
   "concurrency": 3,
   "timeout_s": 180,
+  "url_input": true,
+  "url_contact": "",
+  "url_timeout_s": 30,
+  "max_url_bytes": 10485760,
   "mask": { "extra_patterns": [] },
   "hook": { "max_bytes": 30720 },
   "time": { "default_tz": "UTC" }

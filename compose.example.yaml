@@ -14,7 +14,7 @@
 services:
   cheap-eyes:
     build: .
-    image: cheap-eyes:0.1.0
+    image: cheap-eyes:0.2.0
     restart: unless-stopped
     env_file: .env
     environment:

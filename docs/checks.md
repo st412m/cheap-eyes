@@ -1,8 +1,11 @@
 # Modes and checks
 
-The three modes, what the server checks in each answer, worked examples, and what each
-check does not catch. Read this to pick a mode, or to understand a `bad` or flagged
-line in a header.
+The modes that call a model, what the server checks in each answer, worked examples,
+and what each check does not catch. Read this to pick a mode, or to understand a
+`bad` or flagged line in a header.
+
+Mode `grep` calls no model and has no check: its result is the source text itself (see
+[tools](tools.md#mode-grep)).
 
 Every mode shares one system prompt: use only the numbered input; end every claim with
 line refs present in this input; write `NOT IN INPUT` instead of guessing; no
@@ -12,13 +15,19 @@ lines that were in *that chunk* — not merely somewhere in the file.
 The checks prove that quotes, refs and hard tokens match the source. They do not prove
 that an answer is complete, relevant or correctly reasoned.
 
+Refs show the place of their line in the header and the check report: `L123 (p.12)`,
+`L40 (slide 3)`, `L12 (attachment: offer.pdf, p.2)` (see
+[places in refs](formats.md#places-in-refs)). A ref that names an attachment instead of
+a file (`offer.pdf:L12`) counts as a ref to the message file when line 12 lies inside
+that attachment.
+
 The examples below are real headers from the server with a stubbed model answer.
 
 ## extract — verbatim lines
 
 The answer is input lines quoted verbatim, one per line. Each line is `ok` (equal to
-the masked source line), `ok~` (equal after collapsing whitespace), `partial` (a
-prefix ending in `…`) or `bad`.
+the masked source line), `ok~` (equal after collapsing whitespace, NBSP included,
+and ignoring soft hyphens U+00AD), `partial` (a prefix ending in `…`) or `bad`.
 
 Input `logs/app.log` (as the model sees it, after masking):
 
@@ -108,8 +117,8 @@ reformatted dates ("20 Sep" for `2026-09-20`), computed counts ("3 errors") are
 flagged although correct. **Blind spot:** a claim with a valid ref and no hard token
 ("the sync is reliable (L7)") is not checked for meaning.
 
-`draft` has no reduce pass in v0.1: with several chunks, each chunk's notes come back
-under their own `=== chunk N ===` header.
+`draft` has no reduce pass: with several chunks, each chunk's notes come back under
+their own `=== chunk N ===` header.
 
 ## edits — proposed line edits
 
@@ -137,6 +146,38 @@ result lines: 3
 
 **Not checked:** `new` — whether the replacement is right is up to the agent. The
 server never applies edits.
+
+## schema — fields with refs and quotes
+
+The answer is one JSON object per chunk (the format is in
+[tools](tools.md#mode-schema)); the server merges the chunks and checks every value
+against the lines of the chunk it came from:
+
+| Status | Meaning |
+|---|---|
+| `ok` | The ref points to lines of that chunk's input and the quote occurs in them. |
+| `ok~` | The same after folding whitespace, NBSP and soft hyphens; also a quote that starts with the line prefix of a cited line (`L12| `, `L12 (p.3)| ` or any other place in parentheses, `name:L12| `, on each line of a multi-line quote), checked without it. |
+| `quote_mismatch` | The quote is not in the cited lines; when it is elsewhere in the chunk, the note names the real line. |
+| `bad_ref` | No ref, an unreadable ref, an unknown file, or lines outside the chunk's input. |
+| `value_not_in_quote` | Soft: a hard token of the value (a number of two or more digits, a date, a version, an IP, an id) is not in the quote; numbers are compared after normalising separators. |
+| `null` | The model says the field is not in the input. The server cannot know whether it really is not — completeness is what [bench](bench.md) measures. |
+| `conflict` | Two or more values for one field; each value gets its own item with its own status. |
+| `failed` | A chunk's answer was not a JSON object even after one repair attempt. |
+
+The header line reads:
+
+```text
+check (schema): fields ok 4 / mismatch 1 / null 1 / conflict 0; bad ref 0, value not in quote 0
+  deadline L4 [quote_mismatch] quote found at tender.md:L3
+```
+
+followed by the first 10 problems. `ok` items in the stored report keep the ref and
+the status only; the quote is in the result.
+
+**Known false positive:** a date the model reformatted (`2026-11-27` for
+`27 ноября 2026 года`) is `value_not_in_quote`. **Not caught:** a value taken from the
+wrong line that happens to be quoted correctly, and a field left `null` although the
+input has it.
 
 ## Pass rates
 
