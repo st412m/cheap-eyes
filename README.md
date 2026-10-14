@@ -290,21 +290,6 @@ More: [security](https://github.com/st412m/cheap-eyes/blob/main/docs/security.md
 - [Home Assistant app](https://github.com/st412m/cheap-eyes/blob/main/ha-addon/cheap_eyes/DOCS.md)
 - [Changelog](https://github.com/st412m/cheap-eyes/blob/main/CHANGELOG.md)
 
-## Releasing
-
-For the maintainer. One version goes into `package.json`, `server.json` (`version`
-and `packages[0].version`), the app's `config.yaml` and `Dockerfile`, the root
-`Dockerfile` and `compose.example.yaml`; `node tools/check-release.mjs` checks it, and CI
-runs it.
-
-1. `npm publish`
-2. `mcp-publisher login github`
-3. `mcp-publisher publish` — reads `server.json`; the registry name
-   `io.github.st412m/cheap-eyes` matches `mcpName` in `package.json`.
-4. The Home Assistant app installs the package from npm, so its new version goes out
-   only after step 1.
-5. Push.
-
 ## Prior art
 
 Both MIT-licensed; cheap-eyes is written from scratch (see `NOTICE`).
