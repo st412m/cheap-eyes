@@ -125,6 +125,9 @@ With `write_roots` empty (the default) the server writes nowhere outside its
   404 too, so claude.ai sees an authless server and never starts an OAuth flow.
 - A wrong bearer token gets 401.
 - Neither the token nor the request path is ever logged.
+- A request body over 1 MiB gets 413 before it is parsed.
+- Tool arguments with more than 2000 array elements and object members in total are
+  refused before validation (over stdio too).
 - On the default loopback bind the server also checks the `Host` and `Origin`
   headers; with any other `--host` the token is the only guard, so put a TLS reverse
   proxy in front for remote clients.

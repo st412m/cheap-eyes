@@ -34,9 +34,13 @@ export const DEFAULT_HANDLERS = {
   eyes_stats: async (args, _extra, ctx) => text(await eyesStats(args, ctx)),
 };
 
+// Cap on array elements plus object members in one tool call's arguments, checked by
+// the SDK before validation (GHSA-46jr-4wx8-v453); far above any real call.
+export const MAX_TOOL_INPUT_ELEMENTS = 2000;
+
 // `ctx` carries the loaded config and resolved dirs.
 export function createServer(ctx, handlers = DEFAULT_HANDLERS) {
-  const server = new McpServer({ name: 'cheap-eyes', version: VERSION }, { capabilities: { tools: {} } });
+  const server = new McpServer({ name: 'cheap-eyes', version: VERSION }, { capabilities: { tools: {} }, maxToolInputElements: MAX_TOOL_INPUT_ELEMENTS });
   for (const [name, def] of Object.entries(TOOL_DEFS)) {
     const handler = guarded(name, handlers[name] ?? notImplemented(name));
     server.registerTool(name, def, (args, extra) => handler(args, extra, ctx));

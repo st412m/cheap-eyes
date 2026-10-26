@@ -151,7 +151,7 @@ export async function prepareInput(args, { config, platform = process.platform, 
     if (b.read.sections.length) places.set(b.name, b.read.sections);
     if (b.read.pagesWithoutText.length) warnings.push(`${b.name}: pages without text layer: ${pageRanges(b.read.pagesWithoutText)}`);
     if (b.nums.length === 0) empty.push(b.name);
-    else kept.push({ name: b.name, items: fileItems({ nums: b.nums, masked: b.masked, total: b.total, filtered, markers: b.read.markers }) });
+    else kept.push({ name: b.name, items: fileItems({ nums: b.nums, masked: b.masked, total: b.total, filtered, markers: b.read.markers, sections: b.read.sections }) });
   });
   if (kept.length === 0) throw new InputError('nothing left after filters (range/time/grep)');
 

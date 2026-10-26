@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1 — 2026-10-26
+
+- Security updates of the libraries the app is built on (MCP SDK, zod, mail parser).
+- Requests over 1 MB are refused.
+- In mail with attachments, a page or slide shown to the model is always preceded by
+  the name of the attachment it belongs to.
+- Some malformed emails are read more completely.
+
 ## 0.2.0 — 2026-10-09
 
 - Reads HTML, PDF (with a text layer), Word, RTF, PowerPoint, OpenDocument text and

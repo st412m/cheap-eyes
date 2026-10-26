@@ -1,5 +1,5 @@
 name: cheap-eyes
-version: "0.2.0"
+version: "0.2.1"
 slug: cheap_eyes
 description: MCP server that hands bulk reading to cheap OpenRouter models, masks secrets and checks every answer against the source.
 url: https://github.com/st412m/cheap-eyes

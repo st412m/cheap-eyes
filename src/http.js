@@ -21,6 +21,8 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 import { createServer } from './server.js';
 
 export const DEFAULT_HOST = '127.0.0.1';
+// A larger request body is answered 413 before it is parsed (the SDK default is 4 MiB).
+export const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
 export function isLocalBind(host) {
@@ -92,8 +94,8 @@ function bare(res, status) {
  */
 export function createHttpHandler(ctx, { token, host = DEFAULT_HOST, log = () => {} }) {
   validateToken(token);
-  const mcp = createMcpHandler(() => createServer(ctx));
-  const nodeHandler = toNodeHandler(mcp);
+  const mcp = createMcpHandler(() => createServer(ctx), { maxRequestBodySize: MAX_REQUEST_BODY_BYTES });
+  const nodeHandler = toNodeHandler(mcp, { maxRequestBodySize: MAX_REQUEST_BODY_BYTES });
   const localGuards = isLocalBind(host);
   const validateHost = localGuards ? localhostHostValidation() : null;
   const validateOrigin = localGuards ? localhostOriginValidation() : null;

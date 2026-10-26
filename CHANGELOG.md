@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.1 — 2026-10-26
+
+- Security updates: `@modelcontextprotocol/server` 2.4.0 and `@modelcontextprotocol/node`
+  2.1.2 (GHSA-46jr-4wx8-v453, GHSA-jm63-cq47-j5jp, GHSA-rvq5-wwqv-78pq), zod 4.6.7
+  (GHSA-mrhx-c7xc-m3w5), doclines 0.1.1 with postal-mime 4.1.4 (GHSA-f2hq-32vh-53cc),
+  hono 4.13.14 (GHSA-5r4p-p66f-jhc7).
+- HTTP mode: a request body over 1 MiB is answered 413 before it is parsed (was 4 MiB).
+- A tool call whose arguments hold more than 2000 array elements and object members in
+  total is refused before validation, over stdio and HTTP.
+- Markers: after lines skipped by a filter, at the top of a chunk that starts inside a
+  section and in the second half of a re-split chunk, a line is preceded by the markers
+  of all sections it is in, outermost first (`--- attachment: spec.pdf ---`, then
+  `--- page 4 ---`), not only the innermost one.
+- Mail: EML text follows postal-mime 4.1.4: body text dropped in some malformed messages
+  is extracted; a `message/rfc822` attachment keeps the line endings of the message, so
+  its size in the attachment list can differ.
+
 ## 0.2.0 — 2026-10-09
 
 - **Documents.** `eyes_run` reads HTML, PDF (with a text layer), Word (DOCX, DOCM,

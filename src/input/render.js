@@ -30,20 +30,52 @@ export function gapText(from, to) {
   return from === to ? `… (line ${from} skipped)` : `… (lines ${from}–${to} skipped)`;
 }
 
+// The chain of a line: the markers of the doclines sections that contain it, outermost
+// first (`--- attachment: spec.pdf ---`, `--- page 4 ---`). Needs marker i to open
+// section i (doclines pairs them one to one); otherwise null and callers show only the
+// last marker, as before. Returns chainOf(n) for 1-based n called in ascending order;
+// lines inside the same sections share one array.
+export function chainSweep(markers, sections) {
+  if (!sections.length || markers.length !== sections.length) return null;
+  if (sections.some((s, i) => markers[i].at !== s.start - 1)) return null;
+  let si = 0;
+  const stack = []; // open sections: { end, ref, text }
+  let chain = [];
+  return (n) => {
+    let changed = false;
+    while (stack.length && stack.at(-1).end < n) {
+      stack.pop();
+      changed = true;
+    }
+    for (; si < sections.length && sections[si].start <= n; si++) {
+      if (sections[si].end < n) continue;
+      stack.push({ end: sections[si].end, ref: si, text: markers[si].text });
+      changed = true;
+    }
+    if (changed) chain = stack.map(({ ref, text }) => ({ ref, text }));
+    return chain;
+  };
+}
+
 // Render items of one file: numbered lines, gap markers when a filter dropped lines,
 // and unnumbered marker lines (`--- page 3 ---`). `masked`: Map 0-based index → masked
-// text; `markers`: [{ at, text }] sorted, each placed before the 0-based line `at`.
-// Across skipped lines only the last marker is shown (the page of the next line).
-export function fileItems({ nums, masked, total, filtered, markers = [] }) {
+// text; `markers`: [{ at, text }] sorted, each placed before the 0-based line `at`;
+// `sections`: doclines sections. After skipped lines the line's whole chain is shown;
+// without a chain (no sections, or they do not pair with the markers) only the last
+// marker. Marker items carry `ref` (marker index); line items carry `chain` or null.
+export function fileItems({ nums, masked, total, filtered, markers = [], sections = [] }) {
+  const chainOf = chainSweep(markers, sections);
   const items = [];
   let prev = 0;
   let mi = 0;
   for (const n of nums) {
     if (filtered && n > prev + 1) items.push({ kind: 'gap', text: gapText(prev + 1, n - 1) });
     const here = [];
-    for (; mi < markers.length && markers[mi].at + 1 <= n; mi++) if (markers[mi].at + 1 > prev) here.push(markers[mi]);
-    for (const m of n === prev + 1 ? here : here.slice(-1)) items.push({ kind: 'marker', text: m.text });
-    items.push({ kind: 'line', n, text: `L${n}| ${masked.get(n - 1)}` });
+    for (; mi < markers.length && markers[mi].at + 1 <= n; mi++) if (markers[mi].at + 1 > prev) here.push({ ref: mi, text: markers[mi].text });
+    const chain = chainOf ? chainOf(n) : null;
+    const shown = n === prev + 1 ? here : chain?.length ? chain : here.slice(-1);
+    for (const m of shown) items.push({ kind: 'marker', text: m.text, ref: m.ref });
+    items.push({ kind: 'line', n, text: `L${n}| ${masked.get(n - 1)}`, chain });
     prev = n;
   }
   if (filtered && nums.length && prev < total) items.push({ kind: 'gap', text: gapText(prev + 1, total) });
@@ -66,25 +98,27 @@ function toRanges(nums) {
 
 /**
  * Split `blocks` ([{ name, items }]) into chunks of at most `budget` estimated tokens.
- * Never splits a line or a file header; a break inside a file repeats its header and
- * the last `overlap` lines. Returns [{ text, tokens, lines: { name: [[a, b], …] }, span }].
+ * Never splits a line or a file header; a break inside a file repeats its header, the
+ * chain of the chunk's first line and the last `overlap` lines. Returns
+ * [{ text, tokens, lines: { name: [[a, b], …] }, span, entries }].
  */
 export function chunkBlocks(blocks, { budget, multi, overlap = OVERLAP_LINES }) {
   const chunks = [];
   let cur = null;
+  const tok = (it) => (it ? estimateTokens(it.text + '\n') : 0);
   const open = () => {
     cur = { parts: [], tokens: 0, lines: new Map(), first: null, last: null, entries: [] };
   };
   // `name` undefined: a file header (derived again when a chunk is split).
-  const push = (text, name, n, kind = n === undefined ? 'marker' : 'line') => {
-    cur.parts.push(text);
-    if (name !== undefined) cur.entries.push({ name, kind, n, text });
-    cur.tokens += estimateTokens(text + '\n');
-    if (n !== undefined) {
+  const push = (it, name) => {
+    cur.parts.push(it.text);
+    if (name !== undefined) cur.entries.push({ name, kind: it.kind, n: it.n, text: it.text, ref: it.ref, chain: it.chain });
+    cur.tokens += tok(it);
+    if (it.kind === 'line') {
       if (!cur.lines.has(name)) cur.lines.set(name, []);
-      cur.lines.get(name).push(n);
-      cur.first ??= { name, n };
-      cur.last = { name, n };
+      cur.lines.get(name).push(it.n);
+      cur.first ??= { name, n: it.n };
+      cur.last = { name, n: it.n };
     }
   };
   const close = () => {
@@ -102,14 +136,18 @@ export function chunkBlocks(blocks, { budget, multi, overlap = OVERLAP_LINES }) 
   open();
 
   for (const { name, items } of blocks) {
-    const header = multi ? fileHeader(name) : null;
-    const headerCost = header ? estimateTokens(header + '\n') : 0;
+    const header = multi ? { kind: 'header', text: fileHeader(name) } : null;
+    const headerCost = tok(header);
     let headerDone = false;
     const emitted = []; // line items of this file already placed, for overlap
     const marks = []; // { item, before: index into emitted } of this file's marker lines
+    // Refs of the chain repeated at the top of this chunk: the same markers from the
+    // item stream are dropped until the chunk's first line of this file.
+    let repeated = null;
 
-    for (const item of items) {
-      const cost = estimateTokens(item.text + '\n');
+    for (let idx = 0; idx < items.length; idx++) {
+      const item = items[idx];
+      const cost = tok(item);
       if (headerCost + cost > budget) {
         const where = item.kind === 'line' ? `${name}:L${item.n}` : name;
         throw new InputError(`a single line does not fit one chunk: ${where} (~${cost} tokens > budget ~${budget})`);
@@ -119,9 +157,12 @@ export function chunkBlocks(blocks, { budget, multi, overlap = OVERLAP_LINES }) 
         const inFile = cur.lines.has(name);
         close();
         headerDone = false;
-        if (inFile && item.kind === 'line') {
+        repeated = null;
+        // The line the new chunk starts with: this one, or the first after this marker.
+        let next = item.kind === 'line' ? item : null;
+        if (item.kind === 'marker') for (let j = idx + 1; j < items.length && !next; j++) if (items[j].kind === 'line') next = items[j];
+        if (inFile && item.kind === 'line' && !item.chain) {
           let carry = emitted.slice(-overlap);
-          const tok = (it) => (it ? estimateTokens(it.text + '\n') : 0);
           // The marker in force for the first carried line (its page), and a marker
           // that sat right before this line at the end of the previous chunk.
           const markerFor = (k) => (k ? (marks.filter((m) => m.before <= emitted.length - k).at(-1)?.item ?? null) : null);
@@ -133,9 +174,35 @@ export function chunkBlocks(blocks, { budget, multi, overlap = OVERLAP_LINES }) 
           if (header) push(header);
           headerDone = true;
           const mk = markerFor(carry.length);
-          if (mk) push(mk.text, name);
-          for (const c of carry) push(c.text, name, c.n);
-          if (own) push(own.text, name);
+          if (mk) push(mk, name);
+          for (const c of carry) push(c, name);
+          if (own) push(own, name);
+        } else if (inFile && next?.chain) {
+          // The chain of the first shown line, then the carried lines with the markers
+          // between them that the chain does not already show.
+          const prefix = (k) => {
+            const start = emitted.length - k;
+            const first = k ? emitted[start] : next;
+            const seq = first.chain.map(({ text, ref }) => ({ kind: 'marker', text, ref }));
+            if (!k) return seq;
+            const inChain = new Set(first.chain.map((m) => m.ref));
+            const late = [];
+            for (let i = marks.length - 1; i >= 0 && marks[i].before > start; i--) if (!inChain.has(marks[i].item.ref)) late.unshift(marks[i]);
+            for (let j = start; j <= emitted.length; j++) {
+              for (const m of late) if (m.before === j) seq.push(m.item);
+              if (j < emitted.length) seq.push(emitted[j]);
+            }
+            return seq;
+          };
+          const weight = (seq) => seq.reduce((s, it) => s + tok(it), 0);
+          let k = item.kind === 'line' ? Math.min(overlap, emitted.length) : 0;
+          let seq = prefix(k);
+          while (k > 0 && headerCost + cost + weight(seq) > budget) seq = prefix(--k);
+          while (seq.length && headerCost + cost + weight(seq) > budget) seq = seq.slice(1);
+          if (header) push(header);
+          headerDone = true;
+          for (const it of seq) push(it, name);
+          repeated = new Set(seq.filter((it) => it.kind === 'marker').map((it) => it.ref));
         }
       }
       if (!headerDone && header) {
@@ -143,11 +210,12 @@ export function chunkBlocks(blocks, { budget, multi, overlap = OVERLAP_LINES }) 
         headerDone = true;
       }
       if (item.kind === 'line') {
-        push(item.text, name, item.n);
+        push(item, name);
         emitted.push(item);
+        repeated = null;
       } else {
         if (item.kind === 'marker') marks.push({ item, before: emitted.length });
-        push(item.text, name, undefined, item.kind);
+        if (!(item.kind === 'marker' && repeated?.has(item.ref))) push(item, name);
       }
     }
   }
@@ -184,8 +252,9 @@ export function buildChunk(entries, multi) {
 
 /**
  * Split a chunk in two by lines (a truncated answer is retried on halves). The second
- * half repeats the last `overlap` lines of its file before it, after the marker in
- * force for them. Returns [a, b], or null when the chunk has fewer than two lines.
+ * half opens with the chain of its first line and repeats the last `overlap` lines of
+ * its file before the cut; without a chain, the marker in force for those lines.
+ * Returns [a, b], or null when the chunk has fewer than two lines.
  */
 export function splitChunk(chunk, { multi, overlap = OVERLAP_LINES }) {
   const entries = chunk.entries;
@@ -201,6 +270,13 @@ export function splitChunk(chunk, { multi, overlap = OVERLAP_LINES }) {
   const from = carry.length ? carry[0].i : cut;
   const marker = head.slice(0, from).filter((e) => e.name === name && e.kind === 'marker').at(-1);
   const carried = carry.length ? head.slice(from).filter((e) => e.name === name) : [];
-  const tail = [...(carry.length && marker ? [marker] : []), ...carried, ...entries.slice(cut)];
-  return [buildChunk(head, multi), buildChunk(tail, multi)];
+  const rest = [...carried, ...entries.slice(cut)];
+  const first = rest.find((e) => e.kind === 'line' && e.name === name);
+  if (!first?.chain) return [buildChunk(head, multi), buildChunk([...(carry.length && marker ? [marker] : []), ...rest], multi)];
+  // The chain replaces its own markers that stand before the first line.
+  const chain = first.chain.map(({ text, ref }) => ({ name, kind: 'marker', text, ref }));
+  const inChain = new Set(first.chain.map((m) => m.ref));
+  const at = rest.indexOf(first);
+  const kept = rest.filter((e, i) => !(i < at && e.name === name && e.kind === 'marker' && inChain.has(e.ref)));
+  return [buildChunk(head, multi), buildChunk([...chain, ...kept], multi)];
 }

@@ -71,11 +71,10 @@ names an attachment instead of a file (`offer.pdf:L12`) counts as a ref to the m
 file when line 12 lies inside that attachment, and is shown as
 `L12 (attachment: offer.pdf, p.2)`.
 
-When a chunk breaks inside a section, the next chunk starts with the last marker before
-its first line. When a filter skips lines, only the last marker before the next shown
-line is kept. The model then sees `--- page 2 ---` of an attachment without the
-`--- attachment: … ---` marker above it; the places in refs are computed by the server
-and stay complete.
+When a chunk breaks inside a section, the next chunk starts with the markers of all
+sections its first line is in, outermost first: `--- attachment: spec.pdf ---`, then
+`--- page 2 ---`. The same chain is shown after lines skipped by a filter and at the top
+of the second half of a re-split chunk.
 
 A PDF with some empty pages is read; the header says
 `pages without text layer: 3, 7–9`.

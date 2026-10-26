@@ -268,7 +268,7 @@ More: [troubleshooting](https://github.com/st412m/cheap-eyes/blob/main/docs/trou
   also against DNS rebinding.
 - The server writes nowhere outside its own state folder unless you opt into export.
 - In HTTP mode the token works as a password. It needs at least 32 characters and is
-  never logged; put TLS in front.
+  never logged; put TLS in front. Request bodies over 1 MiB are refused.
 
 More: [security](https://github.com/st412m/cheap-eyes/blob/main/docs/security.md).
 

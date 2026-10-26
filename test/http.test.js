@@ -6,7 +6,8 @@ import http from 'node:http';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { parseConfig } from '../src/config.js';
-import { authorize, createHttpHandler, isLocalBind, sameSecret, validateToken } from '../src/http.js';
+import { authorize, createHttpHandler, isLocalBind, MAX_REQUEST_BODY_BYTES, sameSecret, validateToken } from '../src/http.js';
+import { MAX_TOOL_INPUT_ELEMENTS } from '../src/server.js';
 import { CLI_ARGS, isolatedEnv, tmpDir, writeJson } from './helpers.js';
 
 const TOKEN = 'FAKE-test-token-0123456789abcdefghijklmnop';
@@ -183,6 +184,27 @@ test('a wrong path or token is refused before MCP, whatever the era', async () =
   assert.equal((await rpc('/private_nope/mcp', disc.body, disc.headers)).status, 404);
   assert.equal((await rpc('/mcp', disc.body, disc.headers)).status, 404);
   assert.equal((await rpc('/mcp', disc.body, { ...disc.headers, authorization: 'Bearer FAKE-wrong-token-0123456789abcdefghijk' })).status, 401);
+});
+
+test('a request body over 1 MiB → 413 before MCP, in both eras', async () => {
+  const big = 'x'.repeat(MAX_REQUEST_BODY_BYTES + 1);
+  const legacy = await rpc('/mcp', { ...INIT, params: { ...INIT.params, pad: big } }, { authorization: `Bearer ${TOKEN}` });
+  assert.equal(legacy.status, 413);
+  const call = modern(20, 'tools/call', { name: 'eyes_stats', arguments: {} });
+  const r = await rpc(`/private_${TOKEN}/mcp`, { ...call.body, params: { ...call.body.params, pad: big } }, call.headers);
+  assert.equal(r.status, 413);
+});
+
+test('tool arguments over 2000 elements are refused before the handler, in both eras', async () => {
+  const files = Array.from({ length: MAX_TOOL_INPUT_ELEMENTS + 1 }, (_, i) => `/x/${i}.md`);
+  const args = { mode: 'grep', files, grep: { pattern: 'a' } };
+  const legacy = await rpc(`/private_${TOKEN}/mcp`, { jsonrpc: '2.0', id: 21, method: 'tools/call', params: { name: 'eyes_run', arguments: args } }, { 'mcp-protocol-version': '2025-06-18' });
+  assert.equal(legacy.status, 200, legacy.text);
+  assert.equal(legacy.json.result.isError, true);
+  assert.match(legacy.json.result.content[0].text, /more than the maximum of 2000 elements/);
+  const call = modern(22, 'tools/call', { name: 'eyes_run', arguments: args });
+  const r = await rpc(`/private_${TOKEN}/mcp`, call.body, call.headers);
+  assert.match(JSON.stringify(r.json), /more than the maximum of 2000 elements/, r.text);
 });
 
 test('localhost bind: a foreign Host or Origin is refused with 403 by the SDK guards', async () => {

@@ -1,6 +1,6 @@
 {
   "name": "cheap-eyes",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "mcpName": "io.github.st412m/cheap-eyes",
   "description": "Cheap eyes for an expensive agent: an MCP server that hands bulk reading to cheap OpenRouter models, masks secrets and mechanically checks every answer against the source.",
   "license": "MIT",
@@ -38,10 +38,10 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@modelcontextprotocol/node": "^2.1.0",
-    "@modelcontextprotocol/server": "^2.1.0",
-    "doclines": "0.1.0",
+    "@modelcontextprotocol/node": "^2.1.2",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "doclines": "0.1.1",
     "ignore": "^7.0.10",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   }
 }
