@@ -1,6 +1,7 @@
 // OpenRouter HTTP client. Talks to no host but openrouter.ai. The API key is sent
 // only in the Authorization header and never appears in logs or messages.
 import { createHash } from 'node:crypto';
+import { noKeyText, regionBlockedText } from './actions.js';
 import { Masker } from './mask.js';
 
 export const API_BASE = 'https://openrouter.ai/api/v1';
@@ -47,18 +48,23 @@ export function clearCatalogCache() {
   catalog.clear();
 }
 
+// Public catalogue calls: a 403 there is a refused network (region), not a key problem.
+const PUBLIC_CATALOG = new Set(['/endpoints/zdr', '/models']);
+
 export class OpenRouter {
-  constructor({ key = null, fetch = globalThis.fetch, now = () => Date.now() } = {}) {
+  // `env`: where the refusal texts look for the settings UI and the proxy state.
+  constructor({ key = null, fetch = globalThis.fetch, now = () => Date.now(), env = process.env } = {}) {
     this.key = key;
     this.fetchImpl = fetch;
     this.now = now;
+    this.env = env;
   }
 
   async request(path, { method = 'GET', body, auth = false, signal, timeoutMs }) {
     const headers = { accept: 'application/json' };
     if (body !== undefined) headers['content-type'] = 'application/json';
     if (auth) {
-      if (!this.key) throw new ApiError('OpenRouter key is not set (env CHEAP_EYES_OPENROUTER_KEY)', { status: 401 });
+      if (!this.key) throw new ApiError(noKeyText(this.env), { status: 401 });
       headers.authorization = `Bearer ${this.key}`;
     }
     const signals = [signal, timeoutMs ? AbortSignal.timeout(timeoutMs) : null].filter(Boolean);
@@ -85,6 +91,9 @@ export class OpenRouter {
     }
     // Errors may come with a 200 status and an `error` object in the body.
     const err = json && typeof json === 'object' && json.error ? json.error : null;
+    if (!auth && res.status === 403 && PUBLIC_CATALOG.has(path)) {
+      throw new ApiError(`${method} ${path}: HTTP 403: ${regionBlockedText(this.env)}`, { status: 403 });
+    }
     if (!res.ok || err) {
       const status = Number(err?.code) || res.status;
       const message = err?.message ?? text;

@@ -7,8 +7,8 @@ import { test } from 'node:test';
 import { CLI_ARGS, isolatedEnv, tmpDir, writeJson } from './helpers.js';
 
 // Minimal JSON-RPC client over the server's stdio.
-function startServer(env) {
-  const child = spawn(process.execPath, CLI_ARGS, { env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+function startServer(env, cwd) {
+  const child = spawn(process.execPath, CLI_ARGS, { cwd, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
   const pending = new Map();
   const nonJson = [];
   let stderr = '';
@@ -136,10 +136,117 @@ test('stdio server: three tools, stubs answer isError, id is validated, stdout s
   assert.deepEqual(srv.nonJson, [], 'nothing but JSON-RPC on stdout');
 });
 
-test('stdio server refuses to start on a bad config', async () => {
+const INIT = { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '0' } };
+
+async function waitFor(srv, re) {
+  for (let i = 0; i < 200 && !re.test(srv.stderr()); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.match(srv.stderr(), re);
+}
+
+test('stdio with a broken settings file starts in the setup state: tools listed, every call names the field and the action', async () => {
   const s = setup();
-  const srv = startServer({ ...s.env, CHEAP_EYES_CONFIG: path.join(s.base, 'nope.json') });
-  const code = await new Promise((resolve) => srv.child.on('exit', resolve));
-  assert.equal(code, 1);
-  assert.match(srv.stderr(), /CHEAP_EYES_CONFIG not found/);
+  const bad = writeJson(path.join(s.base, 'bad.json'), { read_roots: [s.root], max_filez: 3 });
+  const srv = startServer({ ...s.env, CHEAP_EYES_CONFIG: bad });
+  try {
+    await srv.request('initialize', INIT);
+    srv.notify('notifications/initialized');
+    const list = await srv.request('tools/list', {});
+    assert.deepEqual(list.result.tools.map((t) => t.name).sort(), ['eyes_result', 'eyes_run', 'eyes_stats']);
+    for (const name of ['eyes_run', 'eyes_result', 'eyes_stats']) {
+      const args = name === 'eyes_run' ? { mode: 'grep', files: ['/x'], grep: { pattern: 'x' } } : name === 'eyes_result' ? { id: '2026-09-26_120000-extract-abcdef' } : {};
+      const r = await srv.request('tools/call', { name, arguments: args });
+      assert.equal(r.result.isError, true, name);
+      const t = r.result.content[0].text;
+      assert.match(t, /settings cannot be used: .*bad\.json: invalid config/s, name);
+      assert.match(t, /unknown field "max_filez"/);
+      assert.match(t, /to fix: fix the fields named above in .*bad\.json, or run `cheap-eyes set <key> <value>`/);
+    }
+    assert.match(srv.stderr(), /on stdio in setup state/);
+  } finally {
+    assert.equal(await srv.stop(), 0);
+  }
+  assert.deepEqual(srv.nonJson, []);
+});
+
+test('stdio setup state: CHEAP_EYES_CONFIG missing, and an invalid variable with a settings UI', async () => {
+  const s = setup();
+  const missing = startServer({ ...s.env, CHEAP_EYES_CONFIG: path.join(s.base, 'nope.json') });
+  try {
+    await missing.request('initialize', INIT);
+    const r = await missing.request('tools/call', { name: 'eyes_stats', arguments: {} });
+    assert.match(r.result.content[0].text, /CHEAP_EYES_CONFIG not found: .*nope\.json\nto fix: create that file or unset CHEAP_EYES_CONFIG/);
+  } finally {
+    assert.equal(await missing.stop(), 0);
+  }
+  const envBad = startServer({ ...s.env, CHEAP_EYES_DAILY_BUDGET_USD: 'lots', CHEAP_EYES_SETTINGS_UI: 'the extension settings in Claude Desktop' });
+  try {
+    await envBad.request('initialize', INIT);
+    const r = await envBad.request('tools/call', { name: 'eyes_stats', arguments: {} });
+    assert.match(r.result.content[0].text, /env CHEAP_EYES_DAILY_BUDGET_USD: must be a positive number/);
+    assert.match(r.result.content[0].text, /to fix: fix the value in the extension settings in Claude Desktop \(environment variable CHEAP_EYES_DAILY_BUDGET_USD\)/);
+  } finally {
+    assert.equal(await envBad.stop(), 0);
+  }
+});
+
+function noFileEnv(base, extra = {}) {
+  return isolatedEnv(path.join(base, 'home'), { HOME: path.join(base, 'home'), USERPROFILE: path.join(base, 'home'), CHEAP_EYES_STATE_DIR: path.join(base, 'state'), ...extra });
+}
+
+test('stdio without a settings file starts with the project folder as the read root; a file job passes the root check', async () => {
+  const base = tmpDir();
+  const proj = path.join(base, 'proj');
+  fs.mkdirSync(proj);
+  fs.writeFileSync(path.join(proj, 'a.md'), 'hello\n');
+  const srv = startServer(noFileEnv(base, { CLAUDE_PROJECT_DIR: proj }));
+  try {
+    await srv.request('initialize', INIT);
+    await waitFor(srv, /on stdio; settings file none; read roots: .* \(default: project folder\)/);
+    assert.ok(srv.stderr().includes(`read roots: ${proj} (default: project folder)`), srv.stderr());
+    const grep = await srv.request('tools/call', { name: 'eyes_run', arguments: { mode: 'grep', files: [path.join(proj, 'a.md')], grep: { pattern: 'hello' } } });
+    assert.equal(grep.result.isError, undefined, JSON.stringify(grep.result));
+    const live = await srv.request('tools/call', { name: 'eyes_run', arguments: { task: 't', mode: 'extract', files: [path.join(proj, 'a.md')] } });
+    assert.match(live.result.content[0].text, /OpenRouter key is not set: set the environment variable CHEAP_EYES_OPENROUTER_KEY .*`cheap-eyes init`/);
+  } finally {
+    assert.equal(await srv.stop(), 0);
+  }
+});
+
+test('stdio from the home folder: no default root, refusals and eyes_stats name the action', async () => {
+  const base = tmpDir();
+  const home = path.join(base, 'home');
+  fs.mkdirSync(home);
+  fs.writeFileSync(path.join(home, 'a.md'), 'hello\n');
+  const srv = startServer(noFileEnv(base, { CLAUDE_PROJECT_DIR: home }));
+  try {
+    await srv.request('initialize', INIT);
+    await waitFor(srv, /read roots: none \(the project folder .* is not used as a default: it is the home directory\)/);
+    const r = await srv.request('tools/call', { name: 'eyes_run', arguments: { mode: 'grep', files: [path.join(home, 'a.md')], grep: { pattern: 'x' } } });
+    assert.equal(r.result.isError, true);
+    assert.match(r.result.content[0].text, /no read roots: file paths are refused .*URLs work\. To add one: the project folder .* is not used as a default \(it is the home directory\): open the client in a project folder, or run `cheap-eyes set read_roots <dir>\.\.\.`/);
+    const stats = await srv.request('tools/call', { name: 'eyes_stats', arguments: {} });
+    const lines = stats.result.content[0].text.split('\n');
+    assert.match(lines[1], /^missing: read roots — file paths are refused, URLs work; to add one: /);
+    assert.match(lines[2], /^missing: OpenRouter key is not set/);
+  } finally {
+    assert.equal(await srv.stop(), 0);
+  }
+});
+
+test('stdio takes read roots as arguments; a bare word is still a command', async () => {
+  const base = tmpDir();
+  const a = path.join(base, 'serve');
+  fs.mkdirSync(a);
+  const child = spawn(process.execPath, [...CLI_ARGS, './serve', path.join(base, 'gone')], {
+    cwd: base,
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ...noFileEnv(base) },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let err = '';
+  child.stderr.on('data', (d) => (err += d));
+  for (let i = 0; i < 200 && !/on stdio/.test(err); i++) await new Promise((r) => setTimeout(r, 50));
+  child.stdin.end();
+  await new Promise((r) => child.on('exit', r));
+  assert.ok(err.includes(`read roots: ${a}, ${path.join(base, 'gone')} (arguments)`), err);
+  assert.match(err, /warning: read root missing: .*gone/);
 });

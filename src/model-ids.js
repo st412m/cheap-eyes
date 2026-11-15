@@ -12,6 +12,12 @@ export function refusedSuffix(id) {
   return suffixes.find((s) => REFUSED_SUFFIXES.includes(s)) ?? null;
 }
 
+// True for a `:free` variant (`vendor/model:free`, in any suffix position).
+export function hasFreeSuffix(id) {
+  const [, ...suffixes] = String(id).toLowerCase().split(':');
+  return suffixes.includes('free');
+}
+
 export function refusedSuffixMessage(suffix) {
   return `the ":${suffix}" model variant is refused`;
 }

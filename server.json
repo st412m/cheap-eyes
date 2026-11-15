@@ -7,12 +7,12 @@
     "url": "https://github.com/st412m/cheap-eyes",
     "source": "github"
   },
-  "version": "0.2.1",
+  "version": "0.3.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "cheap-eyes",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "transport": {
         "type": "stdio"
       },
@@ -25,8 +25,15 @@
           "format": "string"
         },
         {
+          "name": "CHEAP_EYES_READ_ROOTS",
+          "description": "Folders the server may read, absolute, joined by ; on Windows and : elsewhere; optional (default: the project folder)",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
           "name": "CHEAP_EYES_CONFIG",
-          "description": "Path of the JSON config file (read roots, model aliases); optional",
+          "description": "Path of a JSON settings file; optional (every setting has a default)",
           "isRequired": false,
           "isSecret": false,
           "format": "filepath"

@@ -83,7 +83,8 @@ async function rpc(p, body, headers = {}) {
 }
 
 test('token: required, at least 32 chars, URL-safe; errors never echo it', () => {
-  assert.throws(() => validateToken(undefined), /no HTTP token/);
+  assert.throws(() => validateToken(undefined), /HTTP token is empty/);
+  assert.throws(() => validateToken(''), /HTTP token is empty/);
   assert.throws(() => validateToken('short-FAKE'), /too short: 10 chars/);
   assert.throws(() => validateToken('FAKE/with/slashes/0123456789abcdefghijkl'), /may contain only/);
   for (const bad of ['short-FAKE', 'FAKE/with/slashes/0123456789abcdefghijkl']) {
@@ -257,25 +258,53 @@ function runCli(args, env) {
   return { code: r.status, out: r.stdout + r.stderr };
 }
 
-test('serve refuses to start without a token or with a short one, never printing it', () => {
+test('serve refuses a short token from env or --token-file, never printing it, and points to token --new', () => {
   const dir = tmpDir();
   const cfg = writeJson(path.join(dir, 'cfg.json'), { read_roots: [dir] });
   const env = isolatedEnv(path.join(dir, 'home'), { CHEAP_EYES_CONFIG: cfg, CHEAP_EYES_STATE_DIR: path.join(dir, 'state') });
-  const none = runCli(['serve', '--http', '--port', '0'], env);
-  assert.equal(none.code, 1);
-  assert.match(none.out, /no HTTP token/);
   const short = runCli(['serve', '--http', '--port', '0'], { ...env, CHEAP_EYES_HTTP_TOKEN: 'FAKE-short-token' });
   assert.equal(short.code, 1);
-  assert.match(short.out, /too short/);
+  assert.match(short.out, /token from env CHEAP_EYES_HTTP_TOKEN: HTTP token too short: .*; run `cheap-eyes token --new` for a generated one/);
   assert.ok(!short.out.includes('FAKE-short-token'));
   const tf = path.join(dir, 'token.txt');
   fs.writeFileSync(tf, 'FAKE-short-2\n');
   const fromFile = runCli(['serve', '--http', '--port', '0', '--token-file', tf], env);
   assert.equal(fromFile.code, 1);
+  assert.match(fromFile.out, /token from --token-file: HTTP token too short/);
   assert.ok(!fromFile.out.includes('FAKE-short-2'));
+  const missing = runCli(['serve', '--http', '--port', '0', '--token-file', path.join(dir, 'nope.txt')], env);
+  assert.equal(missing.code, 1);
+  assert.match(missing.out, /cannot read --token-file \(ENOENT\)/);
+  assert.equal(fs.existsSync(path.join(dir, 'state', 'token')), false, 'a refused token generates nothing');
   const noHttp = runCli(['serve'], env);
   assert.equal(noHttp.code, 2);
   assert.match(noHttp.out, /serve needs --http/);
+});
+
+test('serve --http still fails fast on a broken settings file, with the action', () => {
+  const dir = tmpDir();
+  const cfg = writeJson(path.join(dir, 'cfg.json'), { read_roots: [dir], max_filez: 1 });
+  const env = isolatedEnv(path.join(dir, 'home'), { CHEAP_EYES_CONFIG: cfg, CHEAP_EYES_STATE_DIR: path.join(dir, 'state'), CHEAP_EYES_HTTP_TOKEN: TOKEN });
+  const r = runCli(['serve', '--http', '--port', '0'], env);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /unknown field "max_filez"/);
+  assert.match(r.out, /to fix: fix the fields named above in /);
+  assert.ok(!r.out.includes(TOKEN));
+});
+
+test('serve --http has no default read root', async () => {
+  const { spawn } = await import('node:child_process');
+  const dir = tmpDir();
+  const proj = path.join(dir, 'proj');
+  fs.mkdirSync(proj);
+  const env = isolatedEnv(path.join(dir, 'home'), { HOME: path.join(dir, 'home'), USERPROFILE: path.join(dir, 'home'), CHEAP_EYES_STATE_DIR: path.join(dir, 'state'), CHEAP_EYES_HTTP_TOKEN: TOKEN, CLAUDE_PROJECT_DIR: proj });
+  const child = spawn(process.execPath, [...CLI_ARGS, 'serve', '--http', '--port', '0'], { cwd: proj, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ...env } });
+  let stderr = '';
+  child.stderr.on('data', (b) => (stderr += b));
+  for (let i = 0; i < 300 && !/on http/.test(stderr); i++) await new Promise((r) => setTimeout(r, 50));
+  child.kill();
+  await new Promise((r) => child.once('exit', r));
+  assert.match(stderr, /on http 127\.0\.0\.1:\d+ .*; settings file none; read roots: none; Node \S+; proxy: direct$/m);
 });
 
 test('serve --http starts, answers on the secret path, and logs neither token nor path', async () => {

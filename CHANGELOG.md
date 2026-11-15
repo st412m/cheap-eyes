@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.3.0 — 2026-11-15
+
+- **No settings file needed.** Every field has a default; a missing settings file is no
+  longer an error. Settings come from arguments, then environment variables, then the
+  file, then defaults; `check-config` names the source of every value that did not come
+  from the file. New variables `CHEAP_EYES_READ_ROOTS`, `CHEAP_EYES_DAILY_BUDGET_USD`
+  and `CHEAP_EYES_SETTINGS_UI`; an empty value counts as not set. The stdio server takes
+  its read roots as arguments (`cheap-eyes <dir>...`).
+- **Default read root.** Without read roots from any source, a stdio server reads the
+  project folder (`CLAUDE_PROJECT_DIR`, else its working directory), never the home
+  folder, a folder that contains it, or a drive root. With no read root the server still
+  starts and URL jobs work. `serve --http` has no default.
+- **`cheap-eyes set <key> [<value>...]`** writes one setting into the settings file
+  (validated first; no value removes the key); it never takes the key or the token.
+- **Models picked and pinned.** With no models in the settings, the first model job
+  picks them: ZDR models the account allows, within the price cap (in $1 / out $4 per 1M
+  tokens unless one is set), cheapest first, each tried on a built-in test job until two
+  pass; the pick is pinned in `<state dir>/models.json` and used as the alias `auto`.
+  Free variants are not picked. Probes are paid calls within the daily budget, logged
+  as `tool: "probe"` and shown on their own line in `eyes_stats`. A pinned id that
+  becomes unusable is skipped; when none is left the server picks again. `cheap-eyes
+  models --pick` picks on request. The pick proves a model works, not that it reads
+  best: `cheap-eyes bench` and `cheap-eyes set models.<alias> <id>` choose by quality.
+- **Price cap in the request.** With a cap in force an id counts when one of its ZDR
+  endpoints fits it, every request carries it as `provider.max_price`, and the budget
+  reservation uses at most the cap. The model table shows lowest–highest prices.
+- **`cheap-eyes init`.** A wizard on a terminal: network (asks for a proxy on HTTP 403
+  and continues through it), key (browser sign-in to OpenRouter with PKCE, or paste;
+  warns about a key without a spending limit), folders, the model pick, and the client
+  (runs `claude mcp add` for Claude Code, or prints the JSON block). `check-config
+  --live` adds the checks against OpenRouter.
+- **Generated HTTP token.** `serve --http` no longer refuses to start without a token:
+  it generates one into `<state dir>/token` and prints the connector path once.
+  `cheap-eyes token` prints it again; `cheap-eyes token --new` replaces it.
+- **Refusals name the action** for the setup in use: the extension settings in Claude
+  Desktop, the app options in Home Assistant, the environment of the Docker container,
+  an environment variable, the client's arguments, or `cheap-eyes set`. A stdio server
+  with settings that cannot be used starts in a setup state: the tools are listed, and
+  every call answers with the error and the fix.
+- **Claude Desktop extension.** `cheap-eyes-<version>.mcpb` on each release: the
+  OpenRouter key, the folders, a proxy field and the daily budget in its settings. The
+  proxy is switched on in the same process with `http.setGlobalProxyFromEnv` where Node
+  has it (24.14+, 25.4+); on an older Node from 22.21 on the server starts itself again
+  through the proxy, and stays up in the setup state with the reason when that fails.
+- **Docker image** `ghcr.io/st412m/cheap-eyes` (linux/amd64, linux/arm64): settings as
+  environment variables, folders under `/input`, state and token in `/data`.
+- **`cheap-eyes hook install [--project]`** and **`hook remove`** add and take out the
+  Claude Code hook.
+- `eyes_stats`, the start line and `check-config` show the Node version and the proxy
+  state (never the proxy URL).
+- `cheap-eyes.example.json` is gone; a short example lives in `docs/configuration.md`.
+
 ## 0.2.1 — 2026-10-26
 
 - Security updates: `@modelcontextprotocol/server` 2.4.0 and `@modelcontextprotocol/node`

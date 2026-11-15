@@ -1,9 +1,10 @@
-// Config lookup, validation and path resolution. No network, no writes.
+// Settings: lookup, validation and path resolution. Sources in order: arguments >
+// environment > settings file > defaults; no file is not an error. No network, no writes.
 import fs from 'node:fs';
 import os from 'node:os';
 import { z } from 'zod';
 import { refusedSuffix, refusedSuffixMessage } from './model-ids.js';
-import { isAbsoluteStrict, isInside, pathApi } from './paths.js';
+import { isAbsoluteStrict, isInside, pathApi, pathSegments } from './paths.js';
 
 export const DEFAULT_DENY_GLOBS = ['.env*', '*.key', '*.pem', 'id_*', 'secrets.yaml', '*.db', '.git/**', 'node_modules/**'];
 
@@ -26,11 +27,15 @@ export const ALLOWED_PARAMS = [
 
 const MB = 1024 * 1024;
 
+// `kind`: config-missing | unreadable | json | invalid | env; `envVar`: the variable
+// whose value was refused. Both pick the action text (actions.js).
 export class ConfigError extends Error {
-  constructor(message, { file } = {}) {
+  constructor(message, { file, kind = 'invalid', envVar } = {}) {
     super(message);
     this.name = 'ConfigError';
     this.file = file;
+    this.kind = kind;
+    if (envVar) this.envVar = envVar;
   }
 }
 
@@ -63,7 +68,8 @@ function makeSchema(platform) {
     .strictObject({
       // Free text for humans (JSON has no comments); ignored by the server.
       $comment: z.union([z.string(), z.array(z.string())]).optional(),
-      read_roots: z.array(absPath).min(1, 'at least one read root is required'),
+      // Empty is allowed: URL jobs still work, file paths are refused with the action.
+      read_roots: z.array(absPath).default([]),
       // Added to the built-in list, never replacing it.
       deny_globs: z
         .array(z.string().min(1))
@@ -173,20 +179,24 @@ export function formatZodError(error) {
   return lines;
 }
 
-function envOrUndefined(env, name) {
+// An empty value, or the placeholder a launcher leaves for a form field nobody filled
+// in (a desktop extension's `${user_config.x}`), counts as not set.
+export const PLACEHOLDER_RE = /^\$\{user_config\.[A-Za-z0-9_]+\}$/;
+
+export function envValue(env, name) {
   const v = env[name];
-  return v === undefined || v === '' ? undefined : v;
+  return v === undefined || v === '' || PLACEHOLDER_RE.test(v) ? undefined : v;
 }
 
 // Candidate config files in lookup order; the first existing file wins.
 export function configCandidates({ env = process.env, cwd = process.cwd(), platform = process.platform, homedir = os.homedir() } = {}) {
   const api = pathApi(platform);
   const list = [];
-  const fromEnv = envOrUndefined(env, 'CHEAP_EYES_CONFIG');
+  const fromEnv = envValue(env, 'CHEAP_EYES_CONFIG');
   if (fromEnv) list.push({ path: api.resolve(cwd, fromEnv), source: 'env CHEAP_EYES_CONFIG', required: true });
   list.push({ path: api.join(cwd, 'cheap-eyes.json'), source: './cheap-eyes.json' });
   if (platform === 'win32') {
-    const appData = envOrUndefined(env, 'APPDATA') ?? api.join(homedir, 'AppData', 'Roaming');
+    const appData = envValue(env, 'APPDATA') ?? api.join(homedir, 'AppData', 'Roaming');
     list.push({ path: api.join(appData, 'cheap-eyes', 'config.json'), source: 'user config (%APPDATA%)' });
   } else {
     list.push({ path: api.join(homedir, '.config', 'cheap-eyes', 'config.json'), source: 'user config (~/.config)' });
@@ -197,7 +207,7 @@ export function configCandidates({ env = process.env, cwd = process.cwd(), platf
 export function defaultStateDir({ env = process.env, platform = process.platform, homedir = os.homedir() } = {}) {
   const api = pathApi(platform);
   if (platform === 'win32') {
-    const local = envOrUndefined(env, 'LOCALAPPDATA') ?? api.join(homedir, 'AppData', 'Local');
+    const local = envValue(env, 'LOCALAPPDATA') ?? api.join(homedir, 'AppData', 'Local');
     return api.join(local, 'cheap-eyes');
   }
   return api.join(homedir, '.local', 'state', 'cheap-eyes');
@@ -206,7 +216,7 @@ export function defaultStateDir({ env = process.env, platform = process.platform
 // env CHEAP_EYES_STATE_DIR > config state_dir > per-OS default.
 export function resolveStateDir(cfg, { env = process.env, platform = process.platform, homedir = os.homedir(), cwd = process.cwd() } = {}) {
   const api = pathApi(platform);
-  const fromEnv = envOrUndefined(env, 'CHEAP_EYES_STATE_DIR');
+  const fromEnv = envValue(env, 'CHEAP_EYES_STATE_DIR');
   if (fromEnv) return { path: api.resolve(cwd, fromEnv), source: 'env CHEAP_EYES_STATE_DIR' };
   if (cfg.state_dir) return { path: api.resolve(cfg.state_dir), source: 'config state_dir' };
   return { path: defaultStateDir({ env, platform, homedir }), source: 'default' };
@@ -225,8 +235,19 @@ function parseJsonFile(file, text) {
       const col = Number(m[1]) - before.lastIndexOf('\n');
       where = ` at line ${line}, column ${col}`;
     }
-    throw new ConfigError(`${file}: not valid JSON${where}`, { file });
+    throw new ConfigError(`${file}: not valid JSON${where}`, { file, kind: 'json' });
   }
+}
+
+// Read and parse a settings file without validating it (`cheap-eyes set` edits the raw object).
+export function readSettingsFile(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    throw new ConfigError(`${file}: cannot read (${e.code ?? e.message})`, { file, kind: 'unreadable' });
+  }
+  return parseJsonFile(file, text);
 }
 
 export function parseConfig(raw, { platform = process.platform, file = '(config)' } = {}) {
@@ -243,36 +264,168 @@ export function parseConfig(raw, { platform = process.platform, file = '(config)
   return cfg;
 }
 
-// Find, read and validate the config. Returns { config, file, source, searched, stateDir, resultsDir }.
-export function loadConfig(opts = {}) {
-  const { env = process.env, cwd = process.cwd(), platform = process.platform, homedir = os.homedir() } = opts;
-  const api = pathApi(platform);
-  const candidates = configCandidates({ env, cwd, platform, homedir });
-  let hit;
+// The settings file in force: the first existing candidate. With none, the file
+// `cheap-eyes set` would create: CHEAP_EYES_CONFIG when set, else the user config.
+// Returns { hit, target, candidates }; `hit` is null when no file exists.
+export function findSettingsFile(opts = {}) {
+  const candidates = configCandidates(opts);
+  let hit = null;
   for (const c of candidates) {
     if (fs.existsSync(c.path)) {
       hit = c;
       break;
     }
-    if (c.required) throw new ConfigError(`config file from env CHEAP_EYES_CONFIG not found: ${c.path}`, { file: c.path });
+    if (c.required) break;
   }
-  if (!hit) {
-    throw new ConfigError(`no config file found; looked in:\n  ${candidates.map((c) => c.path).join('\n  ')}`);
+  const target = hit ?? (candidates[0].required ? candidates[0] : candidates[candidates.length - 1]);
+  return { hit, target, candidates };
+}
+
+// Top-level settings keys, for the per-key source labels.
+export const SETTING_KEYS = Object.keys(makeSchema('linux').shape).filter((k) => k !== '$comment');
+
+const ROOTS_ENV = 'CHEAP_EYES_READ_ROOTS';
+const BUDGET_ENV = 'CHEAP_EYES_DAILY_BUDGET_USD';
+
+// CHEAP_EYES_READ_ROOTS: absolute paths joined by the platform's path delimiter
+// (";" on Windows, ":" elsewhere); empty items dropped. Undefined when not set.
+export function readRootsFromEnv(env = process.env, platform = process.platform) {
+  const raw = envValue(env, ROOTS_ENV);
+  if (raw === undefined) return undefined;
+  const api = pathApi(platform);
+  const items = raw
+    .split(api.delimiter)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (items.length === 0) return undefined;
+  const bad = items.filter((p) => !isAbsoluteStrict(p, platform));
+  if (bad.length) {
+    throw new ConfigError(`env ${ROOTS_ENV}: every item must be an absolute path (separator "${api.delimiter}"): ${bad.map((b) => JSON.stringify(b)).join(', ')}`, {
+      kind: 'env',
+      envVar: ROOTS_ENV,
+    });
   }
-  let text;
+  return items.map((p) => api.resolve(p));
+}
+
+// CHEAP_EYES_DAILY_BUDGET_USD: a positive number, or "off" for null (no local cap).
+export function budgetFromEnv(env = process.env) {
+  const raw = envValue(env, BUDGET_ENV);
+  if (raw === undefined) return undefined;
+  const v = raw.trim();
+  if (v.toLowerCase() === 'off') return null;
+  const n = /^\d+(?:\.\d+)?$/.test(v) ? Number(v) : NaN;
+  if (!(n > 0)) throw new ConfigError(`env ${BUDGET_ENV}: must be a positive number of USD or "off", got ${JSON.stringify(raw)}`, { kind: 'env', envVar: BUDGET_ENV });
+  return n;
+}
+
+function isDirectory(p) {
   try {
-    text = fs.readFileSync(hit.path, 'utf8');
-  } catch (e) {
-    throw new ConfigError(`${hit.path}: cannot read (${e.code ?? e.message})`, { file: hit.path });
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
   }
-  const raw = parseJsonFile(hit.path, text);
-  const config = parseConfig(raw, { platform, file: hit.path });
+}
+
+/**
+ * The read root a stdio server uses when no source gives one: the client's project
+ * folder (CLAUDE_PROJECT_DIR, which Claude Code sets for the servers it spawns, when
+ * it is an absolute existing directory), else the working directory. Resolved with
+ * realpath and refused when it is the home directory, an ancestor of it or a
+ * filesystem or drive root: a default must never open a whole home or disk.
+ * Returns { path, from } or { path: null, candidate, reason }.
+ */
+export function defaultReadRoot({
+  env = process.env,
+  cwd = process.cwd(),
+  platform = process.platform,
+  homedir = os.homedir(),
+  realpath = fs.realpathSync.native,
+  isDir = isDirectory,
+} = {}) {
+  const proj = envValue(env, 'CLAUDE_PROJECT_DIR');
+  const useProj = proj !== undefined && isAbsoluteStrict(proj, platform) && isDir(proj);
+  const given = useProj ? proj : cwd;
+  const from = useProj ? 'CLAUDE_PROJECT_DIR' : 'working directory';
+  let real;
+  try {
+    real = realpath(given);
+  } catch (e) {
+    return { path: null, candidate: given, reason: `cannot resolve it: ${e.code ?? e.message}` };
+  }
+  let home = homedir;
+  try {
+    home = realpath(homedir);
+  } catch {
+    // An unresolvable home is compared as given.
+  }
+  if (pathSegments(real, platform).length === 1) return { path: null, candidate: real, reason: platform === 'win32' ? 'it is a drive root' : 'it is the filesystem root' };
+  if (isInside(home, real, platform)) {
+    return { path: null, candidate: real, reason: isInside(real, home, platform) ? 'it is the home directory' : 'it contains the home directory' };
+  }
+  return { path: real, from };
+}
+
+export const DEFAULT_ROOT_LABEL = 'default: project folder';
+
+/**
+ * Find, read and validate the settings and apply the higher sources. Returns
+ * { config, file, source, searched, writeTarget, sources, settingsUi, defaultRoot,
+ *   stateDir, resultsDir }. `file` is null when no settings file exists.
+ * `args`: read roots given as arguments (stdio). `defaultRoot`: true only for stdio;
+ * `serve --http` has no default root.
+ * `sources[key]`: "file", "default", "env NAME", "arguments", DEFAULT_ROOT_LABEL or
+ * "none" (read_roots given by no source and no default).
+ */
+export function loadConfig(opts = {}) {
+  const { env = process.env, cwd = process.cwd(), platform = process.platform, homedir = os.homedir(), args, defaultRoot = false } = opts;
+  const api = pathApi(platform);
+  const { hit, target, candidates } = findSettingsFile({ env, cwd, platform, homedir });
+  if (!hit && target.required) throw new ConfigError(`config file from env CHEAP_EYES_CONFIG not found: ${target.path}`, { file: target.path, kind: 'config-missing' });
+  const raw = hit ? readSettingsFile(hit.path) : {};
+  const config = parseConfig(raw, { platform, file: hit?.path });
+
+  const sources = {};
+  for (const k of SETTING_KEYS) sources[k] = Object.hasOwn(raw, k) ? 'file' : 'default';
+
+  const envRoots = readRootsFromEnv(env, platform);
+  const argRoots = args?.length ? args.map((a) => api.resolve(cwd, a)) : undefined;
+  let rootInfo = null;
+  if (argRoots) {
+    config.read_roots = argRoots;
+    sources.read_roots = 'arguments';
+  } else if (envRoots) {
+    config.read_roots = envRoots;
+    sources.read_roots = `env ${ROOTS_ENV}`;
+  } else if (sources.read_roots === 'default') {
+    // An explicit list in the file, even an empty one, counts as given.
+    sources.read_roots = 'none';
+    if (defaultRoot) {
+      rootInfo = defaultReadRoot({ env, cwd, platform, homedir, ...opts.defaultRootDeps });
+      if (rootInfo.path) {
+        config.read_roots = [rootInfo.path];
+        sources.read_roots = DEFAULT_ROOT_LABEL;
+      }
+    }
+  }
+
+  const envBudget = budgetFromEnv(env);
+  if (envBudget !== undefined) {
+    config.daily_budget_usd = envBudget;
+    sources.daily_budget_usd = `env ${BUDGET_ENV}`;
+  }
+
   const stateDir = resolveStateDir(config, { env, platform, homedir, cwd });
+  if (stateDir.source.startsWith('env ')) sources.state_dir = stateDir.source;
   return {
     config,
-    file: hit.path,
-    source: hit.source,
+    file: hit?.path ?? null,
+    source: hit?.source ?? null,
     searched: candidates.map((c) => c.path),
+    writeTarget: target.path,
+    sources,
+    settingsUi: envValue(env, 'CHEAP_EYES_SETTINGS_UI') ?? null,
+    defaultRoot: rootInfo,
     stateDir,
     resultsDir: api.join(stateDir.path, 'results'),
   };
@@ -293,6 +446,12 @@ export async function resolveReadRoots(roots) {
   return out;
 }
 
+// The OpenRouter key, or null: an empty value or an unfilled launcher placeholder is
+// no key and never goes to OpenRouter.
+export function openRouterKey(env = process.env) {
+  return envValue(env, 'CHEAP_EYES_OPENROUTER_KEY') ?? null;
+}
+
 export function hasOpenRouterKey(env = process.env) {
-  return Boolean(envOrUndefined(env, 'CHEAP_EYES_OPENROUTER_KEY'));
+  return openRouterKey(env) !== null;
 }

@@ -34,6 +34,16 @@ export const DEFAULT_HANDLERS = {
   eyes_stats: async (args, _extra, ctx) => text(await eyesStats(args, ctx)),
 };
 
+// Setup state (stdio with settings that cannot be used): the tool list is served so
+// the client shows the server, and every call answers with `message`, which ends
+// with the action.
+export function setupHandlers(message) {
+  const refuse = async () => {
+    throw new InputError(message);
+  };
+  return Object.fromEntries(Object.keys(TOOL_DEFS).map((name) => [name, refuse]));
+}
+
 // Cap on array elements plus object members in one tool call's arguments, checked by
 // the SDK before validation (GHSA-46jr-4wx8-v453); far above any real call.
 export const MAX_TOOL_INPUT_ELEMENTS = 2000;

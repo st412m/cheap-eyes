@@ -9,7 +9,7 @@ ARG BUILD_ARCH
 RUN apk add --no-cache nodejs npm \
     && mkdir -p /opt/cheap-eyes \
     && cd /opt/cheap-eyes \
-    && npm install --ignore-scripts --omit=optional --no-package-lock --no-save cheap-eyes@0.2.1 \
+    && npm install --ignore-scripts --omit=optional --no-package-lock --no-save cheap-eyes@0.3.0 \
     && ln -s /opt/cheap-eyes/node_modules/.bin/cheap-eyes /usr/local/bin/cheap-eyes \
     && npm cache clean --force \
     && { rmdir /opt/cheap-eyes/node_modules/@napi-rs 2>/dev/null || true; } \
@@ -21,7 +21,7 @@ RUN chmod a+x /run.sh
 LABEL \
     io.hass.name="cheap-eyes" \
     io.hass.description="MCP server that hands bulk reading to cheap OpenRouter models" \
-    io.hass.version="0.2.1" \
+    io.hass.version="0.3.0" \
     io.hass.type="app" \
     io.hass.arch="${BUILD_ARCH}" \
     org.opencontainers.image.source="https://github.com/st412m/cheap-eyes" \

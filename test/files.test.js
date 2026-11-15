@@ -69,6 +69,28 @@ test('literal file inside a root; relative path refused; outside refused', async
   await refused(expandFiles([path.join(root, '..', 'outside.md')], { config }), /outside read roots/);
 });
 
+test('a server not on Windows names a UNC or drive-letter path as a Windows path, with the read roots in force', async () => {
+  const config = parseConfig({ read_roots: ['/srv/notes', '/srv/logs'] }, { platform: 'linux' });
+  for (const [p, kind] of [
+    ['\\\\host\\share\\folder\\file.md', 'UNC'],
+    ['C:\\Users\\me\\notes\\file.md', 'drive letter'],
+    ['d:/notes/file.md#L1-L5', 'drive letter'],
+  ]) {
+    await refused(
+      expandFiles([p], { config, platform: 'linux', roots: [] }),
+      new RegExp(`^Windows path refused: .+ is a Windows path \\(${kind}\\), but this server runs on another machine \\(linux\\) and cannot open it; give the path as the server sees it, inside a read root; read roots: /srv/notes, /srv/logs$`),
+    );
+  }
+  await refused(expandFiles(['//host/share/file.md'], { config, platform: 'linux', roots: [] }), /outside read roots/);
+});
+
+test('on Windows a UNC or drive-letter path goes through the read roots as before', async () => {
+  const config = parseConfig({ read_roots: ['C:\\notes'] }, { platform: 'win32' });
+  for (const p of ['\\\\host\\share\\folder\\file.md', 'D:\\other\\file.md']) {
+    await refused(expandFiles([p], { config, platform: 'win32', roots: [] }), /^outside read roots: /);
+  }
+});
+
 test('a directory is refused with a hint; a missing file is refused', async () => {
   const d = tmpDir();
   const root = path.join(d, 'root');

@@ -43,7 +43,7 @@ export class TokenError extends Error {
 // Never echoes the token.
 export function validateToken(token) {
   if (typeof token !== 'string' || token.length === 0) {
-    throw new TokenError('no HTTP token: set env CHEAP_EYES_HTTP_TOKEN or pass --token-file');
+    throw new TokenError('HTTP token is empty');
   }
   if (token.length < MIN_TOKEN_LENGTH) throw new TokenError(`HTTP token too short: ${token.length} chars, at least ${MIN_TOKEN_LENGTH} required`);
   if (!TOKEN_CHARS.test(token)) throw new TokenError('HTTP token may contain only A-Z a-z 0-9 . _ ~ - (it is also a URL path segment)');

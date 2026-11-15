@@ -6,9 +6,9 @@ import path from 'node:path';
 import { beforeEach, test } from 'node:test';
 import { Ledger } from '../src/budget.js';
 import { parseConfig } from '../src/config.js';
-import { candidates, capMaxTokens, screenIds, summarizeZdr, worstCaseCost } from '../src/models.js';
+import { candidates, capMaxTokens, maxPriceOf, pricingFor, screenIds, summarizeZdr, worstCaseCost } from '../src/models.js';
 import { clearCatalogCache, OpenRouter, safeErrorText } from '../src/openrouter.js';
-import { eyesRun, FRAME_CLOSE, FRAME_OPEN, neutralize } from '../src/run.js';
+import { buildRequestBody, eyesRun, FRAME_CLOSE, FRAME_OPEN, neutralize } from '../src/run.js';
 import { eyesStats } from '../src/stats.js';
 import { tmpDir } from './helpers.js';
 
@@ -185,7 +185,8 @@ test('resolution: the first usable id is used; the body carries provider.zdr, da
   assert.equal(call.auth, `Bearer ${KEY}`);
   const b = call.body;
   assert.equal(b.model, 'v/a');
-  assert.deepEqual(b.provider, { zdr: true, data_collection: 'deny' });
+  // setup() sets max_price_usd_per_mtok { in: 1, out: 2 }: the request carries it.
+  assert.deepEqual(b.provider, { zdr: true, data_collection: 'deny', max_price: { prompt: 1, completion: 2 } });
   assert.deepEqual(b.plugins, [{ id: 'context-compression', enabled: false }]);
   assert.equal(b.max_completion_tokens, 2048, 'default 4096 capped by the ZDR max_completion_tokens');
   assert.equal(b.max_tokens, undefined);
@@ -356,6 +357,180 @@ test('budget: spend already in today\'s usage log counts; null switches the loca
   await eyesRun({ task: 't', mode: 'extract', files: [g] }, off.ctx, deps(off, mock));
 });
 
+test('budget refusal names where daily_budget_usd is set and how to change it', async () => {
+  const s = setup({ daily_budget_usd: 0.001 });
+  fs.mkdirSync(s.stateDir, { recursive: true });
+  fs.writeFileSync(path.join(s.stateDir, 'usage.jsonl'), JSON.stringify({ ts: new Date().toISOString(), tool: 'eyes_run', cost: 0.001 }) + '\n');
+  const f = write(path.join(s.root, 'a.md'), 'alpha\n');
+  const mock = mockFetch((body) => chatOk(body.model, 'ok'));
+  const fromFile = { ...s.ctx, file: '/etc/ce.json', sources: { daily_budget_usd: 'file' }, settingsUi: null };
+  await refused(
+    eyesRun({ task: 't', mode: 'extract', files: [f] }, fromFile, deps(s, mock)),
+    /daily budget exceeded: .*> daily_budget_usd \$0\.001; daily_budget_usd is set in \/etc\/ce\.json; to change it: run `cheap-eyes set daily_budget_usd <usd>` and restart the server/,
+  );
+  const fromEnv = { ...s.ctx, sources: { daily_budget_usd: 'env CHEAP_EYES_DAILY_BUDGET_USD' }, settingsUi: null };
+  await refused(
+    eyesRun({ task: 't', mode: 'extract', files: [f] }, fromEnv, deps(s, mock)),
+    /daily_budget_usd comes from env CHEAP_EYES_DAILY_BUDGET_USD; to change it: change the environment variable CHEAP_EYES_DAILY_BUDGET_USD where the server is started/,
+  );
+  const ui = { ...s.ctx, sources: { daily_budget_usd: 'default' }, settingsUi: 'the app options in Home Assistant' };
+  await refused(eyesRun({ task: 't', mode: 'extract', files: [f] }, ui, deps(s, mock)), /daily_budget_usd is the default; to change it: set daily_budget_usd in the app options in Home Assistant — result /);
+});
+
+test('HTTP 403 on a public catalogue call is the region text with the proxy action; on an authenticated call it is not', async () => {
+  const forbidden = async (url, init = {}) => new Response('{"error":{"code":403,"message":"forbidden"}}', { status: 403 });
+  clearCatalogCache();
+  const plain = new OpenRouter({ fetch: forbidden, env: {} });
+  await assert.rejects(plain.zdrEndpoints(), (e) => {
+    assert.equal(e.status, 403);
+    assert.match(e.message, /^GET \/endpoints\/zdr: HTTP 403: OpenRouter refuses requests from this network \(some regions are blocked\)\. A proxy is needed: set HTTPS_PROXY=<proxy URL> and NODE_USE_ENV_PROXY=1 in the environment of the server and restart it$/);
+    return true;
+  });
+  clearCatalogCache();
+  const ui = new OpenRouter({ fetch: forbidden, env: { CHEAP_EYES_SETTINGS_UI: 'the extension settings in Claude Desktop' } });
+  await assert.rejects(ui.textModels(), /GET \/models: HTTP 403: OpenRouter refuses .*: fill the Proxy field in the extension settings in Claude Desktop \(http:\/\/host:port\) and restart the server$/);
+  clearCatalogCache();
+  const fakeProxy = 'http://FAKE-user:FAKE-pass@proxy.example.com:3128'; // fake, scan-secrets:allow
+  const proxied = new OpenRouter({ fetch: forbidden, env: { HTTPS_PROXY: fakeProxy, NODE_USE_ENV_PROXY: '1' } });
+  await assert.rejects(proxied.zdrEndpoints(), (e) => {
+    assert.match(e.message, /the proxy in HTTPS_PROXY is refused too/);
+    assert.ok(!e.message.includes('proxy.example.com') && !e.message.includes('FAKE-pass'));
+    return true;
+  });
+  clearCatalogCache();
+  const ignored = new OpenRouter({ fetch: forbidden, env: { HTTPS_PROXY: 'http://proxy.example.com:3128' } });
+  await assert.rejects(ignored.zdrEndpoints(), /the proxy is not in use: HTTPS_PROXY is set, but without NODE_USE_ENV_PROXY=1 Node ignores it; fix that/);
+  clearCatalogCache();
+  const keyed = new OpenRouter({ key: KEY, fetch: forbidden, env: {} });
+  await assert.rejects(keyed.userModels(), (e) => {
+    assert.match(e.message, /HTTP 403: forbidden/);
+    assert.ok(!/regions/.test(e.message));
+    return true;
+  });
+  clearCatalogCache();
+});
+
+test('no key: the text names CHEAP_EYES_OPENROUTER_KEY and cheap-eyes init, or the settings UI', async () => {
+  await assert.rejects(new OpenRouter({ env: {} }).keyInfo(), /OpenRouter key is not set: set the environment variable CHEAP_EYES_OPENROUTER_KEY where the server is started, or run `cheap-eyes init`, then restart the server/);
+  await assert.rejects(
+    new OpenRouter({ env: { CHEAP_EYES_SETTINGS_UI: 'the app options in Home Assistant' } }).keyInfo(),
+    /OpenRouter key is not set \(env CHEAP_EYES_OPENROUTER_KEY\): set the OpenRouter key in the app options in Home Assistant and restart the server/,
+  );
+});
+
+// ---- price cap in the request ----
+
+// v/mixed: one endpoint within a cap of 1 / 2, one far above it.
+// v/split: the cheapest prompt and the cheapest completion price on different endpoints.
+// v/unk: one endpoint without a price, one within the cap.
+const CAP_ZDR = [
+  ep('v/mixed', 'PA', 64000, 8192, 0.5, 1.0),
+  ep('v/mixed', 'PB', 64000, 8192, 5, 10),
+  ep('v/split', 'PA', 64000, 8192, 0.5, 10),
+  ep('v/split', 'PB', 64000, 8192, 5, 1),
+  { model_id: 'v/unk', provider_name: 'PU', context_length: 64000, max_completion_tokens: 8192, pricing: {} },
+  ep('v/unk', 'PK', 64000, 8192, 0.5, 1),
+];
+const CAP = { in: 1, out: 2 };
+
+test('summarizeZdr keeps the lowest ZDR price per id next to the highest, and each endpoint price', () => {
+  const z = summarizeZdr(CAP_ZDR);
+  const m = z.get('v/mixed');
+  assert.deepEqual([m.priceInMin, m.priceIn, m.priceOutMin, m.priceOut].map((v) => Number(v.toFixed(6))), [0.5, 5, 1, 10]);
+  assert.equal(m.prices.length, 2);
+  const u = z.get('v/unk');
+  assert.equal(u.priceIn, Infinity, 'the highest stays unknown');
+  assert.ok(Math.abs(u.priceInMin - 0.5) < 1e-9, 'the lowest comes from the priced endpoint');
+});
+
+test('screenIds with a cap: usable when one endpoint fits; over only when none does; reservation prices are min(highest, cap)', () => {
+  const z = summarizeZdr(CAP_ZDR);
+  const cfg = parseConfig({ read_roots: ['/x'], max_price_usd_per_mtok: CAP }, { platform: 'linux' });
+  const [mixed, split, unk] = screenIds(['v/mixed', 'v/split', 'v/unk'], z, cfg);
+  assert.equal(mixed.ok, true, 'the highest price is over the cap, the cheap endpoint fits');
+  assert.deepEqual([mixed.pricing.priceIn, mixed.pricing.priceOut], [1, 2]);
+  assert.equal(mixed.facts.priceIn, 5, 'the facts keep the live highest price');
+  assert.equal(split.ok, false);
+  assert.match(split.reason, /^over price cap \(no ZDR endpoint within in \$1 \/ out \$2 per 1M; lowest in \$0\.5 \/ out \$1, on different endpoints\)$/);
+  assert.equal(unk.ok, true, 'an endpoint without a price never fits, the priced one does');
+  assert.deepEqual([unk.pricing.priceIn, unk.pricing.priceOut], [1, 2]);
+  const over = screenIds(['v/pricey'], summarizeZdr(ZDR_LIST), cfg)[0];
+  assert.match(over.reason, /^over price cap \(no ZDR endpoint within in \$1 \/ out \$2 per 1M; lowest in \$50 \/ out \$100\)$/);
+});
+
+test('screenIds without a cap: as before — any unknown price refuses, reservation uses the highest price', () => {
+  const z = summarizeZdr(CAP_ZDR);
+  const cfg = parseConfig({ read_roots: ['/x'] }, { platform: 'linux' });
+  const [mixed, split, unk] = screenIds(['v/mixed', 'v/split', 'v/unk'], z, cfg);
+  assert.equal(mixed.ok, true);
+  assert.equal(mixed.pricing, mixed.facts, 'the live facts themselves');
+  assert.equal(split.ok, true);
+  assert.equal(unk.ok, false);
+  assert.equal(unk.reason, 'price unknown');
+});
+
+test('buildRequestBody: provider.max_price is the cap in USD per 1M tokens, set after params; without a cap the body is unchanged', () => {
+  const base = { modelId: 'v/a', system: 's', user: 'u', maxTokens: 10 };
+  const hostile = { temperature: 0, provider: { zdr: false, max_price: { prompt: 999, completion: 999 } } };
+  const capped = buildRequestBody({ ...base, params: hostile, maxPrice: maxPriceOf(CAP) });
+  assert.deepEqual(capped.provider, { zdr: true, data_collection: 'deny', max_price: { prompt: 1, completion: 2 } });
+  assert.equal(capped.temperature, 0);
+  const plain = buildRequestBody({ ...base, params: { temperature: 0 } });
+  assert.deepEqual(plain.provider, { zdr: true, data_collection: 'deny' });
+  assert.equal(maxPriceOf(undefined), null);
+  assert.deepEqual(worstCaseCost(pricingFor(summarizeZdr(CAP_ZDR).get('v/mixed'), CAP), 1e6, 1e6), 3);
+});
+
+function capSetup(withCap) {
+  return setup({ models: { mixed: { ids: ['v/mixed'] } }, defaults: { extract: 'mixed' }, ...(withCap ? { max_price_usd_per_mtok: CAP } : { max_price_usd_per_mtok: undefined }) });
+}
+
+async function reservedFor(withCap) {
+  const s = capSetup(withCap);
+  const amounts = [];
+  const reserve = s.ledger.reserve.bind(s.ledger);
+  s.ledger.reserve = (a, b) => {
+    amounts.push(a);
+    return reserve(a, b);
+  };
+  const f = write(path.join(s.root, 'a.md'), 'alpha\nbeta\n');
+  const mock = mockFetch((body) => chatOk(body.model, 'L1| alpha', { cost: null }), { zdr: CAP_ZDR });
+  await eyesRun({ task: 'find alpha', mode: 'extract', files: [f] }, s.ctx, deps(s, mock));
+  const usage = fs.readFileSync(path.join(s.stateDir, 'usage.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  return { amounts, body: mock.chats()[0].body, cost: usage.at(-1).cost };
+}
+
+test('a capped job: the request carries max_price, the reservation and the cost estimate use min(highest, cap)', async () => {
+  const capped = await reservedFor(true);
+  const plain = await reservedFor(false);
+  assert.deepEqual(capped.body.provider, { zdr: true, data_collection: 'deny', max_price: { prompt: 1, completion: 2 } });
+  assert.deepEqual(plain.body.provider, { zdr: true, data_collection: 'deny' });
+  assert.equal(capped.body.max_completion_tokens, plain.body.max_completion_tokens);
+  // Highest 5 / 10 against a cap of 1 / 2: both prices are five times lower.
+  assert.ok(Math.abs(capped.amounts[0] * 5 - plain.amounts[0]) < 1e-12, `${capped.amounts[0]} vs ${plain.amounts[0]}`);
+  // No usage.cost in the response: estimated from 100 prompt and 20 completion tokens.
+  assert.ok(Math.abs(capped.cost - (100 * 1 + 20 * 2) / 1e6) < 1e-12, String(capped.cost));
+  assert.ok(Math.abs(plain.cost - (100 * 5 + 20 * 10) / 1e6) < 1e-12, String(plain.cost));
+});
+
+test('a capped job is refused when no ZDR endpoint fits, naming the cap and the lowest prices', async () => {
+  const s = setup({ models: { split: { ids: ['v/split'] } }, defaults: { extract: 'split' }, max_price_usd_per_mtok: CAP });
+  const f = write(path.join(s.root, 'a.md'), 'alpha\n');
+  const mock = mockFetch(() => assert.fail('no chat call'), { zdr: CAP_ZDR });
+  await refused(
+    eyesRun({ task: 't', mode: 'extract', files: [f] }, s.ctx, deps(s, mock)),
+    /no usable model for alias split: v\/split: over price cap \(no ZDR endpoint within in \$1 \/ out \$2 per 1M; lowest in \$0\.5 \/ out \$1, on different endpoints\)/,
+  );
+});
+
+test('dry_run bodies carry max_price exactly as a real call would', async () => {
+  const s = capSetup(true);
+  const f = write(path.join(s.root, 'a.md'), 'alpha\n');
+  const mock = mockFetch(() => assert.fail('no chat call'), { zdr: CAP_ZDR });
+  const r = await eyesRun({ task: 't', mode: 'extract', files: [f], dry_run: true }, s.ctx, deps(s, mock));
+  assert.deepEqual(r.bodies[0].provider, { zdr: true, data_collection: 'deny', max_price: { prompt: 1, completion: 2 } });
+});
+
 test('budget ledger: a reservation is settled to the real cost', async () => {
   const l = new Ledger(tmpDir());
   await l.ensure();
@@ -431,7 +606,8 @@ test('eyes_stats: today and all-time totals, key status without the label, model
   assert.ok(!out.includes('sk-or-v1-FAK'), 'the key label is never shown');
   assert.match(out, /\ndefaults: extract -> fast, draft -> fast, edits -> fast, schema -> fast \(extract default\)\naccount: 5 models allowed \(GET \/models\/user\)/, 'defaults per mode come first');
   assert.match(out, /fast -> v\/a {2}\(jobs 2, avg cost \$0\.3750/);
-  assert.match(out, /\* v\/a +zdr 2, ctx 16000, max out 2048, in \$0\.2 \/ out \$0\.4 per 1M/);
+  assert.match(out, /\* v\/a +zdr 2, ctx 16000, max out 2048, in \$0\.1–\$0\.2 \/ out \$0\.3–\$0\.4 per 1M/, 'lowest–highest when the endpoints differ');
+  assert.match(out, /v\/b +zdr 1, ctx 64000, max out 8192, in \$0\.5 \/ out \$1 per 1M/, 'one price when they do not');
   assert.match(out, /pricey -> NO USABLE ID/);
   assert.match(out, /ghost -> v\/tiny/, 'the table screens endpoints and price; context is checked per job');
   assert.match(out, /v\/none +zdr 0.*\[no ZDR endpoint\]/);

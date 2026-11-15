@@ -1,6 +1,6 @@
 {
   "name": "cheap-eyes",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "mcpName": "io.github.st412m/cheap-eyes",
   "description": "Cheap eyes for an expensive agent: an MCP server that hands bulk reading to cheap OpenRouter models, masks secrets and mechanically checks every answer against the source.",
   "license": "MIT",
@@ -25,7 +25,6 @@
   "files": [
     "src/",
     "hooks/",
-    "cheap-eyes.example.json",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",

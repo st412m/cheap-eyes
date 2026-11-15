@@ -3,6 +3,7 @@
 // binary or oversized files are skipped and reported, never silently.
 import fs from 'node:fs/promises';
 import ignore from 'ignore';
+import { rootsAction, rootsInForce } from '../actions.js';
 import { InputError } from '../errors.js';
 import { isAbsoluteStrict, isInside, pathApi } from '../paths.js';
 import { maskedUrl, parseUrlEntry, SCHEME_RE, URL_RE, urlName } from './url.js';
@@ -18,6 +19,10 @@ export function hasControlChars(s) {
 }
 
 // Any ".." segment, in a path or a glob, is refused before anything touches the disk.
+// A UNC path (\\host\share) or a drive-letter path (C:\ or C:/): a path of a Windows
+// client, which a server on another system cannot open.
+const WINDOWS_PATH_RE = /^(?:\\\\[^\\/]+[\\/]|[A-Za-z]:(?:[\\/]|$))/;
+
 export function hasDotDot(p, platform = process.platform) {
   return p.split(platform === 'win32' ? /[\\/]/ : /\//).includes('..');
 }
@@ -171,7 +176,7 @@ class GitIgnore {
  * Returns { files: [{ real, root, rel, range }], skipped: [{ path, reason }] }.
  * Files carry `rel` (POSIX, relative to their root) and `root` ({ index, real, kind }).
  */
-export async function expandFiles(entries, { config, platform = process.platform, roots }) {
+export async function expandFiles(entries, { config, platform = process.platform, roots, rootsHint }) {
   const api = pathApi(platform);
   roots ??= await resolveRoots(config.read_roots);
   const denied = makeDenyMatcher(config.deny_globs);
@@ -191,9 +196,12 @@ export async function expandFiles(entries, { config, platform = process.platform
     }
   };
 
+  // A path outside every root: the roots in force and how to add one.
+  const action = rootsHint ?? rootsAction();
   const guardRoot = (p) => {
     const root = lexicalRoot(p, roots, platform);
-    if (!root) throw new InputError(`outside read roots: ${p}`);
+    if (!root && config.read_roots.length === 0) throw new InputError(`no read roots: file paths are refused (${p}); URLs work. To add one: ${action}`);
+    if (!root) throw new InputError(`outside read roots: ${p}; read roots: ${rootsInForce(config.read_roots)}. To add one: ${action}`);
     if (root.kind === 'missing') throw new InputError(`read root missing: ${root.given} (${root.error}); refused: ${p}`);
     return root;
   };
@@ -208,6 +216,12 @@ export async function expandFiles(entries, { config, platform = process.platform
       // Each URL is its own pseudo-root: a name clash falls back to "#u<k>/host/path".
       add({ url, real: null, root: { index: `u${++urls}`, kind: 'url', real: null }, rel: urlName(url), range: null, literal: true, given: maskedUrl(url) });
       continue;
+    }
+    if (platform !== 'win32' && WINDOWS_PATH_RE.test(raw)) {
+      const { path: p } = parseRange(raw);
+      throw new InputError(
+        `Windows path refused: ${p} is a Windows path (${p.startsWith('\\') ? 'UNC' : 'drive letter'}), but this server runs on another machine (${platform}) and cannot open it; give the path as the server sees it, inside a read root; read roots: ${rootsInForce(config.read_roots)}`,
+      );
     }
     if (SCHEME_RE.test(raw)) {
       throw new InputError(`URL scheme refused: ${raw.slice(0, raw.indexOf(':') + 1)} (only http and https; local files by absolute path)`, { reason: 'URL scheme refused' });

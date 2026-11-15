@@ -6,9 +6,11 @@ import {
   DEFAULT_DENY_GLOBS,
   ALLOWED_PARAMS,
   configCandidates,
+  defaultReadRoot,
   defaultStateDir,
   loadConfig,
   parseConfig,
+  readRootsFromEnv,
   resolveStateDir,
 } from '../src/config.js';
 import { isolatedEnv, tmpDir, writeJson } from './helpers.js';
@@ -76,12 +78,19 @@ test('lookup: CHEAP_EYES_CONFIG pointing to a missing file is an error, not a fa
   assert.match(e.message, /CHEAP_EYES_CONFIG not found/);
 });
 
-test('lookup: no config anywhere lists every searched path', () => {
+test('lookup: no settings file is not an error; every field has its default', () => {
   const s = setup();
-  const e = errorOf(() => loadConfig({ env: s.env, cwd: s.cwd, homedir: s.home }));
-  assert.match(e.message, /no config file found/);
-  assert.ok(e.message.includes(path.join(s.cwd, 'cheap-eyes.json')));
-  assert.ok(e.message.includes(s.userCfg));
+  const r = loadConfig({ env: s.env, cwd: s.cwd, homedir: s.home });
+  assert.equal(r.file, null);
+  assert.equal(r.source, null);
+  assert.deepEqual(r.searched, [path.join(s.cwd, 'cheap-eyes.json'), s.userCfg]);
+  assert.equal(r.writeTarget, s.userCfg, 'set writes the user settings file');
+  assert.deepEqual(r.config.read_roots, []);
+  assert.equal(r.sources.read_roots, 'none', 'no default root unless asked for (serve --http)');
+  assert.equal(r.config.daily_budget_usd, 1.0);
+  assert.equal(r.sources.daily_budget_usd, 'default');
+  assert.equal(r.sources.max_files, 'default');
+  assert.equal(r.settingsUi, null);
 });
 
 test('candidates per OS', () => {
@@ -144,9 +153,9 @@ function invalid(raw, platform = 'linux') {
   return errorOf(() => parseConfig(raw, { platform, file: 'cfg.json' })).message;
 }
 
-test('read_roots is required', () => {
-  assert.match(invalid({}), /field "read_roots"/);
-  assert.match(invalid({ read_roots: [] }), /field "read_roots": at least one/);
+test('read_roots may be absent or empty', () => {
+  assert.deepEqual(parseConfig({}, { platform: 'linux' }).read_roots, []);
+  assert.deepEqual(parseConfig({ read_roots: [] }, { platform: 'linux' }).read_roots, []);
 });
 
 test('unknown fields are named, top-level and nested', () => {
@@ -296,10 +305,156 @@ test('loadConfig reports state and results dirs, env override applied', () => {
   assert.equal(fs.existsSync(stateDir), false, 'loading the config must not create anything');
 });
 
-test('cheap-eyes.example.json is a valid config; $comment is accepted and ignored', () => {
-  const raw = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'cheap-eyes.example.json'), 'utf8'));
-  const cfg = parseConfig(raw, { platform: 'linux' });
-  assert.deepEqual(Object.keys(cfg.models), ['fast', 'long']);
+// ---- sources without a file: environment, arguments, default root ----
+
+test('env CHEAP_EYES_READ_ROOTS: platform delimiter, empty items dropped, wins over the file', () => {
+  const s = setup();
+  const a = path.join(s.base, 'a');
+  const b = path.join(s.base, 'b');
+  writeJson(path.join(s.cwd, 'cheap-eyes.json'), { read_roots: [ROOT] });
+  const r = loadConfig({ env: { ...s.env, CHEAP_EYES_READ_ROOTS: `${a}${path.delimiter}${path.delimiter} ${b} ` }, cwd: s.cwd, homedir: s.home });
+  assert.deepEqual(r.config.read_roots, [a, b]);
+  assert.equal(r.sources.read_roots, 'env CHEAP_EYES_READ_ROOTS');
+  const win = readRootsFromEnv({ CHEAP_EYES_READ_ROOTS: 'C:\\a;;D:\\b' }, 'win32');
+  assert.deepEqual(win, ['C:\\a', 'D:\\b']);
+  assert.deepEqual(readRootsFromEnv({ CHEAP_EYES_READ_ROOTS: '/a::/b' }, 'linux'), ['/a', '/b']);
+});
+
+test('env CHEAP_EYES_READ_ROOTS: a relative item is refused and the variable is named', () => {
+  const e = errorOf(() => readRootsFromEnv({ CHEAP_EYES_READ_ROOTS: '/a:notes' }, 'linux'));
+  assert.equal(e.name, 'ConfigError');
+  assert.equal(e.envVar, 'CHEAP_EYES_READ_ROOTS');
+  assert.match(e.message, /env CHEAP_EYES_READ_ROOTS: every item must be an absolute path \(separator ":"\): "notes"/);
+});
+
+test('env CHEAP_EYES_DAILY_BUDGET_USD: a number, "off" for null, anything else refused', () => {
+  const s = setup();
+  const load = (v) => loadConfig({ env: { ...s.env, CHEAP_EYES_DAILY_BUDGET_USD: v }, cwd: s.cwd, homedir: s.home });
+  const r = load('2.5');
+  assert.equal(r.config.daily_budget_usd, 2.5);
+  assert.equal(r.sources.daily_budget_usd, 'env CHEAP_EYES_DAILY_BUDGET_USD');
+  assert.equal(load('off').config.daily_budget_usd, null);
+  assert.equal(load('OFF').config.daily_budget_usd, null);
+  for (const bad of ['0', '-1', 'lots', '1e3']) {
+    const e = errorOf(() => load(bad));
+    assert.equal(e.envVar, 'CHEAP_EYES_DAILY_BUDGET_USD', bad);
+    assert.match(e.message, /must be a positive number of USD or "off"/);
+  }
+});
+
+test('an empty variable, or an unfilled launcher placeholder, means not set', () => {
+  const s = setup();
+  writeJson(path.join(s.cwd, 'cheap-eyes.json'), { read_roots: [ROOT], daily_budget_usd: 3 });
+  for (const v of ['', '${user_config.read_roots}']) {
+    const r = loadConfig({ env: { ...s.env, CHEAP_EYES_READ_ROOTS: v, CHEAP_EYES_DAILY_BUDGET_USD: v, CHEAP_EYES_SETTINGS_UI: v }, cwd: s.cwd, homedir: s.home });
+    assert.equal(r.sources.read_roots, 'file');
+    assert.equal(r.config.daily_budget_usd, 3);
+    assert.equal(r.sources.daily_budget_usd, 'file');
+    assert.equal(r.settingsUi, null);
+  }
+});
+
+test('positional roots: resolved against the working directory, win over env and file', () => {
+  const s = setup();
+  writeJson(path.join(s.cwd, 'cheap-eyes.json'), { read_roots: [ROOT] });
+  const r = loadConfig({ env: { ...s.env, CHEAP_EYES_READ_ROOTS: path.join(s.base, 'env') }, cwd: s.cwd, homedir: s.home, args: ['./serve', s.base] });
+  assert.deepEqual(r.config.read_roots, [path.join(s.cwd, 'serve'), s.base]);
+  assert.equal(r.sources.read_roots, 'arguments');
+});
+
+test('source labels: file, default, env; state_dir from env', () => {
+  const s = setup();
+  writeJson(path.join(s.cwd, 'cheap-eyes.json'), { read_roots: [ROOT], max_files: 9 });
+  const r = loadConfig({ env: { ...s.env, CHEAP_EYES_STATE_DIR: path.join(s.base, 'st'), CHEAP_EYES_SETTINGS_UI: 'the extension settings' }, cwd: s.cwd, homedir: s.home });
+  assert.equal(r.sources.max_files, 'file');
+  assert.equal(r.sources.read_roots, 'file');
+  assert.equal(r.sources.concurrency, 'default');
+  assert.equal(r.sources.state_dir, 'env CHEAP_EYES_STATE_DIR');
+  assert.equal(r.settingsUi, 'the extension settings');
+  assert.equal(r.writeTarget, path.join(s.cwd, 'cheap-eyes.json'), 'set writes the file in force');
+});
+
+test('an explicit empty read_roots in the file counts as given: no default root', () => {
+  const s = setup();
+  writeJson(path.join(s.cwd, 'cheap-eyes.json'), { read_roots: [] });
+  const proj = path.join(s.base, 'proj');
+  fs.mkdirSync(proj);
+  const r = loadConfig({ env: { ...s.env, CLAUDE_PROJECT_DIR: proj }, cwd: s.cwd, homedir: s.home, defaultRoot: true });
+  assert.deepEqual(r.config.read_roots, []);
+  assert.equal(r.sources.read_roots, 'file');
+});
+
+test('default root: CLAUDE_PROJECT_DIR when absolute and existing, else the working directory', () => {
+  const s = setup();
+  const proj = path.join(s.base, 'proj');
+  fs.mkdirSync(proj);
+  const withProj = loadConfig({ env: { ...s.env, CLAUDE_PROJECT_DIR: proj }, cwd: s.cwd, homedir: s.home, defaultRoot: true });
+  assert.deepEqual(withProj.config.read_roots, [proj]);
+  assert.equal(withProj.sources.read_roots, 'default: project folder');
+  assert.equal(withProj.defaultRoot.from, 'CLAUDE_PROJECT_DIR');
+  for (const bad of ['relative/proj', path.join(s.base, 'missing')]) {
+    const r = loadConfig({ env: { ...s.env, CLAUDE_PROJECT_DIR: bad }, cwd: s.cwd, homedir: s.home, defaultRoot: true });
+    assert.deepEqual(r.config.read_roots, [s.cwd], bad);
+    assert.equal(r.defaultRoot.from, 'working directory');
+  }
+});
+
+test('default root: the home directory, an ancestor of it and a root are refused; the server has none', () => {
+  const s = setup();
+  for (const cwd of [s.home, s.base, path.parse(s.base).root]) {
+    const r = loadConfig({ env: s.env, cwd, homedir: s.home, defaultRoot: true });
+    assert.deepEqual(r.config.read_roots, [], cwd);
+    assert.equal(r.sources.read_roots, 'none');
+    assert.equal(r.defaultRoot.path, null);
+  }
+  assert.match(defaultReadRoot({ env: {}, cwd: s.home, homedir: s.home }).reason, /home directory/);
+  assert.match(defaultReadRoot({ env: {}, cwd: s.base, homedir: s.home }).reason, /contains the home directory/);
+  // A folder below home is fine.
+  assert.equal(defaultReadRoot({ env: {}, cwd: s.cwd, homedir: s.base }).path, s.cwd);
+});
+
+test('default root: Windows drive root and UNC share root refused (platform parameter)', () => {
+  const deps = { platform: 'win32', homedir: 'C:\\Users\\u', realpath: (p) => p, isDir: () => true };
+  assert.match(defaultReadRoot({ ...deps, env: {}, cwd: 'D:\\' }).reason, /drive root/);
+  assert.match(defaultReadRoot({ ...deps, env: {}, cwd: '\\\\host\\share\\' }).reason, /drive root/);
+  assert.match(defaultReadRoot({ ...deps, env: {}, cwd: 'c:\\users' }).reason, /contains the home directory/);
+  assert.match(defaultReadRoot({ ...deps, env: {}, cwd: 'C:\\USERS\\U' }).reason, /is the home directory/);
+  assert.deepEqual(defaultReadRoot({ ...deps, env: { CLAUDE_PROJECT_DIR: 'C:\\Users\\u\\proj' }, cwd: 'C:\\' }), { path: 'C:\\Users\\u\\proj', from: 'CLAUDE_PROJECT_DIR' });
+  const posix = { platform: 'linux', homedir: '/home/u', realpath: (p) => p, isDir: () => true };
+  assert.match(defaultReadRoot({ ...posix, env: {}, cwd: '/' }).reason, /filesystem root/);
+  assert.match(defaultReadRoot({ ...posix, env: {}, cwd: '/home' }).reason, /contains the home directory/);
+  assert.equal(defaultReadRoot({ ...posix, env: {}, cwd: '/srv/work' }).path, '/srv/work');
+});
+
+test('default root: symlinks are resolved before the check', () => {
+  const s = setup();
+  const link = path.join(s.base, 'to-home');
+  try {
+    fs.symlinkSync(s.home, link, 'junction');
+  } catch {
+    return; // no symlink rights on this machine
+  }
+  assert.match(defaultReadRoot({ env: {}, cwd: link, homedir: s.home }).reason, /home directory/);
+});
+
+test('serve has no default root: without defaultRoot nothing is chosen', () => {
+  const s = setup();
+  const proj = path.join(s.base, 'proj');
+  fs.mkdirSync(proj);
+  const r = loadConfig({ env: { ...s.env, CLAUDE_PROJECT_DIR: proj }, cwd: s.cwd, homedir: s.home });
+  assert.deepEqual(r.config.read_roots, []);
+  assert.equal(r.defaultRoot, null);
+});
+
+test('the example of docs/configuration.md is a valid config with no real model id; $comment is accepted and ignored', () => {
+  const doc = fs.readFileSync(path.join(import.meta.dirname, '..', 'docs', 'configuration.md'), 'utf8');
+  const block = /A short example[\s\S]*?```json\n([\s\S]*?)\n```/.exec(doc)?.[1];
+  assert.ok(block, 'the example block is in docs/configuration.md');
+  const raw = JSON.parse(block);
+  const cfg = parseConfig({ ...raw, $comment: 'ignored' }, { platform: 'linux' });
+  assert.deepEqual(Object.keys(cfg.models), ['fast']);
   assert.deepEqual(cfg.models.fast.params, { reasoning: { effort: 'none' } });
+  assert.ok(cfg.models.fast.ids.every((id) => !id.includes('/')), 'a placeholder, not an OpenRouter id');
+  assert.ok(!fs.existsSync(path.join(import.meta.dirname, '..', 'cheap-eyes.example.json')));
   assert.throws(() => parseConfig({ ...raw, $comment: 5 }, { platform: 'linux' }), /field "\$comment"/);
 });

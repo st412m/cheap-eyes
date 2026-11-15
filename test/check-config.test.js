@@ -42,7 +42,7 @@ test('check-config prints the winning file, roots, dirs, export, retention and a
   }));
   const r = run(['check-config'], { ...s.env, CHEAP_EYES_OPENROUTER_KEY: FAKE_KEY }, s.base);
   assert.equal(r.code, 0, r.out);
-  assert.ok(r.out.includes(`config file:    ${s.file}  (env CHEAP_EYES_CONFIG)`), r.out);
+  assert.ok(r.out.includes(`settings file:  ${s.file}  (env CHEAP_EYES_CONFIG)`), r.out);
   assert.ok(r.out.includes(`[1] ${s.root}`), r.out);
   assert.match(r.out, /\(dir\)/);
   assert.ok(r.out.includes(path.join(s.base, 'state')), r.out);
@@ -70,7 +70,7 @@ test('check-config: export off, key not set, file root', () => {
   assert.match(r.out, /export:\s+off/);
   assert.match(r.out, /\(file\)/);
   assert.match(r.out, /openrouter key: NOT set/);
-  assert.match(r.out, /daily budget:\s+\$1\n/);
+  assert.match(r.out, /daily budget:\s+\$1  \(default\)\n/);
   assert.match(r.out, /deny globs:.*\(built-in\)\n/);
 });
 
@@ -126,6 +126,20 @@ test('check-config shows the HTTP bind default and the token state, never the to
   assert.ok(!shortTok.out.includes('FAKE-short'));
 });
 
+test('check-config reads CHEAP_EYES_HTTP_TOKEN as the server does: empty or an unfilled placeholder means not set', () => {
+  const s = setup(({ root }) => ({ read_roots: [root] }));
+  for (const v of ['', '${user_config.http_token}']) {
+    const r = run(['check-config'], { ...s.env, CHEAP_EYES_HTTP_TOKEN: v }, s.base);
+    assert.match(r.out, /http token: +NOT set yet: serve --http generates one into /, JSON.stringify(v));
+    assert.doesNotMatch(r.out, /set but invalid/);
+  }
+  fs.mkdirSync(path.join(s.base, 'state'));
+  fs.writeFileSync(path.join(s.base, 'state', 'token'), 'FAKE-saved-token-0123456789abcdefghijkl\n');
+  const saved = run(['check-config'], { ...s.env, CHEAP_EYES_HTTP_TOKEN: '${user_config.http_token}' }, s.base);
+  assert.match(saved.out, /http token: +saved in .*token \(`cheap-eyes token` prints it\)/);
+  assert.ok(!saved.out.includes('FAKE-saved-token'));
+});
+
 test('check-config: proxy direct / set / ignored, never the proxy URL', () => {
   const s = setup(({ root }) => ({ read_roots: [root] }));
   const proxy = 'http://FAKE-user:FAKE-pass@proxy.example.com:3128';
@@ -136,6 +150,56 @@ test('check-config: proxy direct / set / ignored, never the proxy URL', () => {
   const off = run(['check-config'], { ...s.env, HTTPS_PROXY: proxy }, s.base).out;
   assert.match(off, /proxy: +direct \(HTTPS_PROXY is set, but without NODE_USE_ENV_PROXY=1 Node ignores it\)/);
   assert.ok(!off.includes('proxy.example.com'));
+});
+
+// ---- no settings file ----
+
+function bare(extra = {}) {
+  const base = tmpDir();
+  const home = path.join(base, 'home');
+  const proj = path.join(base, 'proj');
+  fs.mkdirSync(home);
+  fs.mkdirSync(proj);
+  const userCfg = process.platform === 'win32' ? path.join(home, 'AppData', 'Roaming', 'cheap-eyes', 'config.json') : path.join(home, '.config', 'cheap-eyes', 'config.json');
+  return { base, home, proj, userCfg, env: isolatedEnv(home, { HOME: home, USERPROFILE: home, CHEAP_EYES_STATE_DIR: path.join(base, 'state'), ...extra }) };
+}
+
+test('check-config without a settings file: none, the default root and the source of every value', () => {
+  const s = bare();
+  const r = run(['check-config'], s.env, s.proj);
+  assert.equal(r.code, 0, r.out);
+  assert.ok(r.out.includes(`settings file:  none (cheap-eyes set writes ${s.userCfg})`), r.out);
+  assert.ok(r.out.includes(`read roots:     ${s.proj} (default: project folder)`), r.out);
+  for (const re of [/retention: .*  \(default\)$/m, /daily budget: +\$1  \(default\)$/m, /limits: .*  \(default\)$/m, /default tz: +UTC  \(default\)$/m]) assert.match(r.out, re);
+  assert.match(r.out, /^models: +auto \(not picked yet\)$/m);
+  assert.match(r.out, /^defaults: +auto for every mode \(the settings name no models\)$/m);
+  assert.match(r.out, /^price cap: +in \$1 \/ out \$4 per 1M tokens \(built-in, for picked models\)$/m);
+  assert.match(r.out, /\nOK$/m);
+});
+
+test('check-config: CHEAP_EYES_READ_ROOTS and the budget variable are named as the sources', () => {
+  const s = bare();
+  const other = path.join(s.base, 'other');
+  fs.mkdirSync(other);
+  const r = run(['check-config'], { ...s.env, CHEAP_EYES_READ_ROOTS: [s.proj, other].join(path.delimiter), CHEAP_EYES_DAILY_BUDGET_USD: 'off' }, s.proj);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /read roots:  \(env CHEAP_EYES_READ_ROOTS\)\n  \[1\] .*\n  \[2\] /);
+  assert.match(r.out, /daily budget: +off \(null\)  \(env CHEAP_EYES_DAILY_BUDGET_USD\)/);
+});
+
+test('check-config from the home folder: no default root, why, and how to add one', () => {
+  const s = bare();
+  const r = run(['check-config'], s.env, s.home);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /read roots: +none \(the project folder .* is not used as a default: it is the home directory\); file paths are refused, URLs work; to add one: /);
+});
+
+test('check-config: a bad variable exits 1 with the action', () => {
+  const s = bare();
+  const r = run(['check-config'], { ...s.env, CHEAP_EYES_READ_ROOTS: 'relative/dir' }, s.proj);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /ERROR env CHEAP_EYES_READ_ROOTS: every item must be an absolute path/);
+  assert.match(r.out, /to fix: fix the environment variable CHEAP_EYES_READ_ROOTS/);
 });
 
 test('proxyState: --use-env-proxy in NODE_OPTIONS, old Node 22', async () => {

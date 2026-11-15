@@ -23,7 +23,7 @@ answer (the steps are in [internals](internals.md#how-it-works)).
 | `task` | What to look for or write. Masked like file content. Required for `extract`, `draft`, `edits`; optional for `grep` (a label in the header) and `schema` (extra instructions). |
 | `mode` | `extract`, `draft`, `edits`, `grep` or `schema` (see [checks](checks.md) and below). |
 | `schema` | Mode `schema` only: the fields to fill (see [mode schema](#mode-schema)). |
-| `model` | Alias; default `defaults[mode]` (`schema` falls back to `defaults.extract`). Raw ids only with `allow_raw_model_ids`. |
+| `model` | Alias, or `auto` (the picked models); default `defaults[mode]` (`schema` falls back to `defaults.extract`), or `auto` when the settings name no models. Raw ids only with `allow_raw_model_ids`. |
 | `files` | Absolute paths or globs inside `read_roots`, or `http(s)` URLs. `#L100-L400` range on a single file. HTML, PDF, Word, RTF, PowerPoint, OpenDocument text and presentations, EPUB, FB2 and mail are read as text; spreadsheets are refused: see [formats](formats.md). |
 | `grep` | `{pattern, context = 3, ignore_case}` — send only matching windows. Runs in a worker with a timeout. Required for mode `grep`. |
 | `time` | `{since, until, tz}` (ISO 8601) — keep log lines whose timestamp is in the window. Continuation lines (tracebacks) stay with their stamped line; a file with no recognised timestamp is an error. Recognises ISO 8601, `YYYY-MM-DD HH:MM:SS[.mmm]`, syslog `Mon DD HH:MM:SS` and journalctl short-iso. |
@@ -175,9 +175,13 @@ progress in chunks until it is done. `eyes_result {id, cancel: true}` aborts it.
 
 ## `eyes_stats`
 
-Spend and jobs today (UTC day) and all time, by alias and model id (grep jobs as
-`(grep, no model)`); the local budget state; the key's status from OpenRouter
-(`limit`, `limit_remaining`, `limit_reset`, `usage_daily`). `models: true` adds the
-[model table](models.md#choosing-models), starting with the default alias per mode;
-`candidates: {min_context, max_price_in}` adds up to 10 cheap ZDR models not in your
-config that your account may use.
+First what is missing (read roots, the key), each with what to do; then spend and
+jobs today (UTC day) and all time, by alias and model id (grep jobs as
+`(grep, no model)`), with the probes of the model pick on a line of their own; the
+local budget state; the runtime line (`runtime: Node <version>; proxy: <state>`, with
+the application when the Node is built into one, such as Claude Desktop; never the
+proxy URL); the key's status from OpenRouter (`limit`, `limit_remaining`,
+`limit_reset`, `usage_daily`). `models: true` adds the
+[model table](models.md#choosing-models), starting with the default alias per mode or
+the pin with its probes; `candidates: {min_context, max_price_in}` adds up to 10 cheap
+ZDR models not in your settings that your account may use.

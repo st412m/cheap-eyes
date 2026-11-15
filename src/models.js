@@ -13,10 +13,12 @@ function num(v) {
 }
 
 /**
- * ZDR endpoints → Map model_id → { endpoints, providers, context, maxOut, maxPrompt, priceIn, priceOut, priceRequest }.
+ * ZDR endpoints → Map model_id → { endpoints, providers, context, maxOut, maxPrompt,
+ * priceIn, priceOut, priceInMin, priceOutMin, prices, priceRequest }.
  * Routing may land on any endpoint, so per id: the smallest context, max output and
  * max prompt (null/0 = no limit given), the highest prices (USD per 1M tokens;
- * per-request price in USD).
+ * per-request price in USD). The lowest prices and the per-endpoint prices
+ * ({ in, out }) tell whether any endpoint fits a price cap.
  */
 export function summarizeZdr(endpoints) {
   const out = new Map();
@@ -24,7 +26,20 @@ export function summarizeZdr(endpoints) {
     if (!e || typeof e.model_id !== 'string') continue;
     let s = out.get(e.model_id);
     if (!s) {
-      s = { id: e.model_id, endpoints: 0, providers: [], context: null, maxOut: null, maxPrompt: null, priceIn: null, priceOut: null, priceRequest: 0 };
+      s = {
+        id: e.model_id,
+        endpoints: 0,
+        providers: [],
+        context: null,
+        maxOut: null,
+        maxPrompt: null,
+        priceIn: null,
+        priceOut: null,
+        priceInMin: null,
+        priceOutMin: null,
+        prices: [],
+        priceRequest: 0,
+      };
       out.set(e.model_id, s);
     }
     s.endpoints++;
@@ -39,11 +54,38 @@ export function summarizeZdr(endpoints) {
     const pout = num(e.pricing?.completion);
     const preq = num(e.pricing?.request);
     // A missing price is not free: treat it as unknown (Infinity) so a cap refuses it.
-    s.priceIn = Math.max(s.priceIn ?? 0, pin === null ? Infinity : pin * PER_M);
-    s.priceOut = Math.max(s.priceOut ?? 0, pout === null ? Infinity : pout * PER_M);
+    const pi = pin === null ? Infinity : pin * PER_M;
+    const po = pout === null ? Infinity : pout * PER_M;
+    s.priceIn = Math.max(s.priceIn ?? 0, pi);
+    s.priceOut = Math.max(s.priceOut ?? 0, po);
+    s.priceInMin = Math.min(s.priceInMin ?? Infinity, pi);
+    s.priceOutMin = Math.min(s.priceOutMin ?? Infinity, po);
+    s.prices.push({ in: pi, out: po });
     s.priceRequest = Math.max(s.priceRequest, preq ?? 0);
   }
   return out;
+}
+
+// True when at least one ZDR endpoint of the id has both prices within the cap: the
+// cheapest prompt and the cheapest completion price may sit on different endpoints,
+// and OpenRouter's max_price needs one endpoint that fits both.
+export function fitsCap(facts, cap) {
+  return facts.prices.some((p) => p.in <= cap.in && p.out <= cap.out);
+}
+
+/**
+ * Prices for reservations and cost estimates. With a cap the request carries it as
+ * provider.max_price, so no endpoint above it is used: min(highest ZDR price, cap).
+ * Without a cap: the highest ZDR prices.
+ */
+export function pricingFor(facts, cap) {
+  if (!cap) return facts;
+  return { ...facts, priceIn: Math.min(facts.priceIn, cap.in), priceOut: Math.min(facts.priceOut, cap.out) };
+}
+
+// The cap as provider.max_price: USD per 1M prompt and completion tokens.
+export function maxPriceOf(cap) {
+  return cap ? { prompt: cap.in, completion: cap.out } : null;
 }
 
 export const BLOCKED_BY_ACCOUNT = "blocked by the account's guardrails or privacy settings — allow it at openrouter.ai → Guardrails";
@@ -70,11 +112,21 @@ export function fmtPrice(p) {
   return `$${p < 0.01 && p > 0 ? p.toPrecision(2) : Number(p.toFixed(3))}`;
 }
 
+// Lowest–highest ZDR price of an id; one value when every endpoint charges the same.
+export function fmtPriceRange(min, max) {
+  if (min === null || min === undefined || min === max) return fmtPrice(max);
+  return `${fmtPrice(min)}–${fmtPrice(max)}`;
+}
+
 /**
  * Screen the ids of a model choice against live facts. Returns
- * [{ id, ok, reason, blocked, facts, context }] in priority order; `context` is the
- * usable context (live, capped by config.max_context). `account`: the Set of ids the
- * account may use, or null when unknown (then nothing is blocked).
+ * [{ id, ok, reason, blocked, facts, pricing, context }] in priority order; `context`
+ * is the usable context (live, capped by config.max_context); `pricing`: the prices
+ * reservations use (pricingFor). `account`: the Set of ids the account may use, or
+ * null when unknown (then nothing is blocked).
+ * With a price cap an id is usable when one ZDR endpoint fits it; an endpoint without
+ * a price never fits, and the cap bounds the reservation. Without a cap every endpoint
+ * needs a known price, since routing may land on any of them.
  */
 export function screenIds(ids, zdr, config, account = null) {
   const cap = config.max_price_usd_per_mtok;
@@ -86,29 +138,34 @@ export function screenIds(ids, zdr, config, account = null) {
     if (!facts) return { id, ok: false, reason: 'no ZDR endpoint', facts };
     if (account && !account.has(id)) return { id, ok: false, reason: 'blocked by account', blocked: true, facts };
     if (facts.context === null) return { id, ok: false, reason: 'no context length in the ZDR list', facts };
-    // Without a price the budget cannot be reserved: refused whether or not a cap is set.
-    if (!Number.isFinite(facts.priceIn) || !Number.isFinite(facts.priceOut)) return { id, ok: false, reason: 'price unknown', facts };
-    if (cap && (facts.priceIn > cap.in || facts.priceOut > cap.out)) {
-      return {
-        id,
-        ok: false,
-        reason: `over price cap (in ${fmtPrice(facts.priceIn)} / out ${fmtPrice(facts.priceOut)} per 1M > ${fmtPrice(cap.in)} / ${fmtPrice(cap.out)})`,
-        facts,
-      };
+    if (cap) {
+      if (!fitsCap(facts, cap)) {
+        const split = facts.priceInMin <= cap.in && facts.priceOutMin <= cap.out ? ', on different endpoints' : '';
+        return {
+          id,
+          ok: false,
+          reason: `over price cap (no ZDR endpoint within in ${fmtPrice(cap.in)} / out ${fmtPrice(cap.out)} per 1M; lowest in ${fmtPrice(facts.priceInMin)} / out ${fmtPrice(facts.priceOutMin)}${split})`,
+          facts,
+        };
+      }
+    } else if (!Number.isFinite(facts.priceIn) || !Number.isFinite(facts.priceOut)) {
+      // Without a price the budget cannot be reserved.
+      return { id, ok: false, reason: 'price unknown', facts };
     }
     const context = config.max_context ? Math.min(facts.context, config.max_context) : facts.context;
-    return { id, ok: true, reason: null, facts, context };
+    return { id, ok: true, reason: null, facts, pricing: pricingFor(facts, cap), context };
   });
 }
 
-export function noUsableModel(label, screened, extra = []) {
+// `hint`: an action appended to the reasons (for the picked models: how to pick again).
+export function noUsableModel(label, screened, extra = [], hint = null) {
   const blocked = screened.filter((s) => s.blocked).map((s) => s.id);
   const parts = [
     ...(blocked.length ? [`${blocked.join(', ')}: ${BLOCKED_BY_ACCOUNT}`] : []),
     ...screened.filter((s) => !s.ok && !s.blocked).map((s) => `${s.id}: ${s.reason}`),
     ...extra,
   ];
-  return new InputError(`no usable model for ${label}: ${parts.join('; ')}`);
+  return new InputError(`no usable model for ${label}: ${parts.join('; ')}${hint ? ` — ${hint}` : ''}`);
 }
 
 // Output cap for one id: requested, capped by the id's smallest ZDR max output and
@@ -164,6 +221,8 @@ export function modelTable(config, zdr, usageByAlias = {}, account = null) {
         max_prompt: s.facts?.maxPrompt ?? null,
         price_in: s.facts?.priceIn ?? null,
         price_out: s.facts?.priceOut ?? null,
+        price_in_min: s.facts?.priceInMin ?? null,
+        price_out_min: s.facts?.priceOutMin ?? null,
       })),
       jobs: u?.jobs ?? 0,
       avg_cost: u && u.jobs ? u.cost / u.jobs : null,
@@ -195,15 +254,16 @@ function pad(s, n) {
 }
 
 // `head`: lines printed first (defaults per mode, account availability).
-export function renderModelTable(rows, cands = null, { head = [], candidatesNote = '' } = {}) {
+// `emptyText`: the line for a table without rows; null prints none.
+export function renderModelTable(rows, cands = null, { head = [], candidatesNote = '', emptyText = 'no model aliases in config' } = {}) {
   const out = [...head];
-  if (rows.length === 0) out.push('no model aliases in config');
+  if (rows.length === 0 && emptyText !== null) out.push(emptyText);
   for (const r of rows) {
     const stats = `jobs ${r.jobs}, avg cost ${r.avg_cost === null ? '-' : `$${r.avg_cost.toFixed(4)}`}, check pass ${r.pass_rate ?? '-'}`;
     out.push(`${r.alias} -> ${r.resolved ?? 'NO USABLE ID'}  (${stats})`);
     for (const i of r.ids) {
       const mark = i.id === r.resolved ? '*' : ' ';
-      const facts = `zdr ${i.endpoints}, ctx ${i.context ?? '-'}${i.max_prompt ? `, max prompt ${i.max_prompt}` : ''}, max out ${i.max_out ?? '-'}, in ${fmtPrice(i.price_in)} / out ${fmtPrice(i.price_out)} per 1M`;
+      const facts = `zdr ${i.endpoints}, ctx ${i.context ?? '-'}${i.max_prompt ? `, max prompt ${i.max_prompt}` : ''}, max out ${i.max_out ?? '-'}, in ${fmtPriceRange(i.price_in_min, i.price_in)} / out ${fmtPriceRange(i.price_out_min, i.price_out)} per 1M`;
       out.push(`  ${mark} ${pad(i.id, 40)} ${facts}${i.ok ? '' : `  [${i.reason}]`}`);
     }
   }
@@ -211,7 +271,7 @@ export function renderModelTable(rows, cands = null, { head = [], candidatesNote
     out.push('');
     out.push(cands.length ? `candidates (ZDR text models not in config, cheapest first; suggestions only${candidatesNote}):` : `candidates: none match${candidatesNote}`);
     for (const c of cands) {
-      out.push(`  ${pad(c.id, 40)} zdr ${c.endpoints}, ctx ${c.context}, max out ${c.maxOut ?? '-'}, in ${fmtPrice(c.priceIn)} / out ${fmtPrice(c.priceOut)} per 1M`);
+      out.push(`  ${pad(c.id, 40)} zdr ${c.endpoints}, ctx ${c.context}, max out ${c.maxOut ?? '-'}, in ${fmtPriceRange(c.priceInMin, c.priceIn)} / out ${fmtPriceRange(c.priceOutMin, c.priceOut)} per 1M`);
     }
   }
   return out.join('\n');

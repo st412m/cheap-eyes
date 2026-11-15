@@ -7,15 +7,27 @@ line reference in the answer against the source.
 This page covers running the app. The full reference is on GitHub:
 [documentation index](https://github.com/st412m/cheap-eyes/tree/main/docs).
 
+## First start
+
+1. Set `openrouter_key` (an OpenRouter account with credits; give the key a spending
+   limit on openrouter.ai).
+2. Start the app. With `http_token` empty, it generates a token, writes it into the
+   `http_token` option and prints the connector path once in the log.
+3. Copy the connector path from the log, or the token from the Configuration tab, into
+   your client (below).
+
+The first model job picks the models: the server tries the cheapest candidates on a
+built-in test job and pins the ones that pass (see [Models](#models-and-guardrails)).
+
 ## Configuration
 
 | Option | Default | What it does |
 |---|---|---|
 | `openrouter_key` | empty | OpenRouter API key. Use a **dedicated key with its own daily limit** set on openrouter.ai: that limit is the real spending ceiling. Every model call fails until it is set. |
-| `http_token` | empty | At least 32 random characters, e.g. from `openssl rand -hex 32`. Anyone who has it can use the server. The app refuses to start without it. |
-| `models` | `fast`, `long` | Aliases: `alias`, `ids` (comma-separated OpenRouter ids in priority order) and `reasoning` (`none`, `low` or `default` = the model's own). The shipped ids were valid on 2026-09-26 and age. |
-| `defaults` | `fast` for `extract`, `draft`, `edits`; `long` for `schema` | Alias per mode (`extract`, `draft`, `edits`, `schema`) when a call names none. Each value must be an alias defined in `models` (e.g. `fast`); an unknown alias stops the app at start. An empty `schema` uses the `extract` alias. |
-| `max_price_usd_per_mtok` | none | Optional cap: ids whose ZDR price (USD per 1M tokens) is higher are skipped. Set both `in` and `out`, or neither. |
+| `http_token` | empty | Empty: the app generates a token on the first start, writes it here and prints the connector path in the log once. Clear it to get a new one (the connector URL changes). A value of your own must have at least 32 characters, or the server stops at start and says why. Anyone who has the token can use the server. |
+| `models` | none | Empty: the server picks models itself on the first job and pins the pick in `/data`. Or aliases: `alias`, `ids` (comma-separated OpenRouter ids in priority order) and `reasoning` (`none`, `low` or `default` = the model's own). |
+| `defaults` | none | Only with `models`: the alias per mode (`extract`, `draft`, `edits`, `schema`) when a call names none. Each value must be an alias defined in `models` (e.g. `fast`); an unknown alias stops the app at start. An empty `schema` uses the `extract` alias. Ignored while `models` is empty. |
+| `max_price_usd_per_mtok` | none | Optional cap in USD per 1M tokens: an id counts only when one of its ZDR endpoints fits it, and every request carries it, so OpenRouter routes only to endpoints within it. Set both `in` and `out`, or neither. Picked models use in $1 / out $4 when it is not set. |
 | `daily_budget_usd` | `1.0` | Second line of defence: the server reserves the worst-case cost before every model call and refuses once the UTC day's spend would pass this. |
 | `read_roots` | `/share`, `/media` | Folders (or single files) the server may read, as the app sees them: `/share/...` or `/media/...`. |
 | `export_dir` | empty | Empty: export off, the server writes only to its own `/data`. Set: result copies go there, and it is the only folder the server may write to. |
@@ -32,7 +44,8 @@ Restart the app after changing an option.
 The endpoint is `/private_<token>/mcp` on port 3400 (MCP over Streamable HTTP). For
 claude.ai, publish port 3400 through your own reverse proxy that terminates TLS (not
 part of this app) and use `https://<host>/private_<token>/mcp` as the connector URL.
-Claude Code: `claude mcp add --transport http cheap-eyes https://<host>/private_<token>/mcp`.
+Claude Code: `claude mcp add --scope user --transport http cheap-eyes https://<host>/private_<token>/mcp`.
+Without `--scope user`, Claude Code adds the server for the current folder only.
 Clients that can send headers may use `https://<host>/mcp` with an `Authorization`
 header carrying the bearer token instead. A wrong path gets a bare 404; a wrong bearer
 token gets 401.
@@ -87,10 +100,21 @@ More: [results](https://github.com/st412m/cheap-eyes/blob/main/docs/results.md).
 
 ## Models and Guardrails
 
-The app pins no model: aliases live in the `models` option. Each alias lists ids in
-priority order; the server uses the first one that is usable and falls back to the
-next. `eyes_stats {models: true}` shows the default alias per mode, the resolved id
-per alias with live context and price, and each alias's check pass rate.
+With `models` empty, the first model job picks the models: candidates are the
+zero-data-retention models your account allows, within the price cap, cheapest first;
+each is tried on a built-in test job (a paid call of a fraction of a cent, counted in
+the budget) until two pass, and those two are pinned in `/data/models.json`. That
+proves a model works here, not that it reads best: the cheapest model that passes wins.
+Free variants are not picked. To choose by quality, compare models on your own
+documents with `cheap-eyes bench` (on a computer, see
+[models](https://github.com/st412m/cheap-eyes/blob/main/docs/models.md)) and put the
+ones you want into `models`. The pin does not move on its own; an id that becomes
+unusable is skipped, and when none is left the server picks again.
+
+With aliases in `models`, each alias lists ids in priority order; the server uses the
+first one that is usable and falls back to the next. `eyes_stats {models: true}` shows
+the default alias per mode (or the pin), the resolved id per alias with live context
+and price, and each alias's check pass rate.
 
 Every request asks for Zero Data Retention endpoints (`provider.zdr: true`,
 `data_collection: "deny"`); a model id without a ZDR endpoint is refused, never
@@ -122,7 +146,8 @@ Whoever has it can, until you change it:
   masked text, unless `url_input` is off;
 - spend money up to `daily_budget_usd` per day and the key's own limit.
 
-Change `http_token` and restart the app; consider rotating the OpenRouter key.
+Clear `http_token` and restart the app (a new token is generated and shown in the log),
+then update every client; consider rotating the OpenRouter key.
 
 If `export_dir` points into `/media` or `/share`, the server writes there with its own
 rules only: whatever conventions other tools keep in that folder (for example a notes
@@ -134,6 +159,14 @@ More: [security](https://github.com/st412m/cheap-eyes/blob/main/docs/security.md
 
 - **OpenRouter answers 403 "Access denied by security policy".** OpenRouter refuses
   some regions. Set `https_proxy` and restart.
+- **The app stops at start: `token from env CHEAP_EYES_HTTP_TOKEN: HTTP token too short`
+  (or `may contain only …`).** The `http_token` option holds a value of your own that
+  the server does not accept. Clear it (a token is generated) or put in a longer one.
+- **The log says the http_token option could not be written.** The token is in
+  `/data/token` and works; the log line names the `docker exec` command that shows it.
+- **No model passes the pick.** The refusal names each tried id and why. Allow more
+  models at openrouter.ai → Guardrails, raise `max_price_usd_per_mtok`, or name models
+  in `models`.
 - **A model is `blocked by account`.** Allow it at openrouter.ai → Guardrails, or put
   another id in the alias.
 - **`account: availability unknown (…)` in `eyes_stats`.** The account's model list

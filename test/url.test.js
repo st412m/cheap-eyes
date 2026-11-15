@@ -486,7 +486,11 @@ test('url_contact: printed by check-config, never in the usage log or the result
   fs.writeFileSync(cfg, JSON.stringify({ read_roots: [d], url_contact: contact }));
   const env = { CHEAP_EYES_CONFIG: cfg, CHEAP_EYES_STATE_DIR: path.join(d, 'state') };
   const out = await checkConfig({ env, cwd: d, homedir: d });
-  assert.ok(out.text.split('\n').includes(`url input:      on, timeout 30 s, max 10485760 B per URL; contact ${contact}`), out.text);
+  // The other url fields are defaults and labelled so.
+  assert.ok(
+    out.text.split('\n').includes(`url input:      on, timeout 30 s, max 10485760 B per URL; contact ${contact}  (url_input: default, url_timeout_s: default, max_url_bytes: default)`),
+    out.text,
+  );
   fs.writeFileSync(cfg, JSON.stringify({ read_roots: [d] }));
-  assert.match((await checkConfig({ env, cwd: d, homedir: d })).text, /; contact none \(url_contact\)\n/);
+  assert.match((await checkConfig({ env, cwd: d, homedir: d })).text, /; contact none \(url_contact\)  \(default\)\n/);
 });

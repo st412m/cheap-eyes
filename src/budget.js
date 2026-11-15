@@ -4,10 +4,12 @@
 // Separate processes do not share a ledger: the OpenRouter key limit is the real ceiling.
 import { readUsage, spentOnDay, utcDay } from './usage.js';
 
+// `daily`: the daily_budget_usd cap refused it (not a caller's own cap such as bench --max-usd).
 export class BudgetError extends Error {
-  constructor(message) {
+  constructor(message, { daily = false } = {}) {
     super(message);
     this.name = 'BudgetError';
+    this.daily = daily;
   }
 }
 
@@ -43,6 +45,7 @@ export class Ledger {
     if (budget !== null && budget !== undefined && this.spent + this.reserved + amount > budget + 1e-12) {
       throw new BudgetError(
         `daily budget exceeded: spent $${this.spent.toFixed(4)} + reserved $${this.reserved.toFixed(4)} + this call up to $${amount.toFixed(4)} > daily_budget_usd $${budget}`,
+        { daily: true },
       );
     }
     this.reserved += amount;

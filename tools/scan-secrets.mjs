@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Repository hygiene: fail on anything the masker would mask and on private LAN
 // addresses (10/8, 172.16/12, 192.168/16). Scans the files git knows about (tracked
-// plus untracked, not ignored); test/fixtures/ is skipped. Reports file:line and the
+// plus untracked, not ignored), or every file of the tree but node_modules and .git
+// where git cannot list them; test/fixtures/ is skipped. Reports file:line and the
 // rule, never the matched text, so the CI log does not repeat a leaked secret.
 //
 // The masker is built to over-mask, so code and tests that talk about tokens trip it:
@@ -35,9 +36,38 @@ const PRIVATE_V4 = new RegExp(
   String.raw`(?<![\d.])(?:10\.${OCTET}\.${OCTET}\.${OCTET}|172\.(?:1[6-9]|2\d|3[01])\.${OCTET}\.${OCTET}|192\.168\.${OCTET}\.${OCTET})(?!\d|\.\d)`,
 );
 
-function gitFiles() {
-  const out = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: ROOT, encoding: 'utf8' });
+// git's own error text is kept out of the output: the reason is reported in one line.
+function gitFiles(root) {
+  const out = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   return out.split('\0').filter(Boolean);
+}
+
+const WALK_SKIP = new Set(['node_modules', '.git']);
+
+// Every file under root, repo-relative POSIX paths, without node_modules and .git.
+function walkFiles(root, dir = '') {
+  const out = [];
+  for (const e of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+    const rel = dir ? `${dir}/${e.name}` : e.name;
+    if (e.isDirectory()) {
+      if (!WALK_SKIP.has(e.name)) out.push(...walkFiles(root, rel));
+    } else if (e.isFile()) out.push(rel);
+  }
+  return out.sort();
+}
+
+/**
+ * The files to scan: those git knows about, or, where git cannot list them (git is
+ * missing, or the tree is not a repository, such as a downloaded ZIP), every file of
+ * the tree but node_modules and .git. `note`: why git was not used, or null.
+ */
+export function listFiles(root, { git = gitFiles } = {}) {
+  try {
+    return { files: git(root), note: null };
+  } catch (e) {
+    const why = e.code === 'ENOENT' ? 'git not found' : `git ls-files failed: ${String(e.stderr ?? e.message).trim().split('\n')[0]}`;
+    return { files: walkFiles(root), note: `git is not available here (${why}); scanning every file of the tree but node_modules and .git` };
+  }
 }
 
 function readText(file) {
@@ -96,9 +126,13 @@ function argTarget(arg, rootReal) {
 
 function main(args) {
   const rootReal = realNative(ROOT);
-  const targets = args.length
-    ? args.map((a) => argTarget(a, rootReal))
-    : gitFiles().map((r) => ({ abs: path.join(ROOT, r), rel: toPosix(r), name: toPosix(r) }));
+  let targets;
+  if (args.length) targets = args.map((a) => argTarget(a, rootReal));
+  else {
+    const { files, note } = listFiles(ROOT);
+    if (note) console.log(`scan-secrets: ${note}`);
+    targets = files.map((r) => ({ abs: path.join(ROOT, r), rel: toPosix(r), name: toPosix(r) }));
+  }
   let findings = 0;
   let scanned = 0;
   const flagged = new Set();
@@ -109,6 +143,8 @@ function main(args) {
       if (!fs.statSync(abs).isFile()) continue;
       text = readText(abs);
     } catch (e) {
+      // A tracked file deleted in the working tree: nothing is left to scan.
+      if (e.code === 'ENOENT' && rel !== null) continue;
       // An unreadable file is a finding of that file, reported like any other.
       scanned++;
       console.log(`${name}: cannot read (${e.code ?? e.message})`);

@@ -46,79 +46,92 @@ flagged L9 as `bad`. The agent sees that before it relies on the answer.
 
 ## Requirements
 
+- **An OpenRouter account with credits.** cheap-eyes calls models through your
+  OpenRouter key; `cheap-eyes init` can create one through a browser sign-in. Give the
+  key a spending limit on openrouter.ai: that is the real ceiling.
+- **A proxy, only where OpenRouter refuses your network.** OpenRouter answers HTTP 403
+  to some regions; then the calls need a proxy in another region (`init`, the extension
+  and the Home Assistant app ask for it).
+- **A TLS reverse proxy, only for claude.ai.** claude.ai reaches servers on the
+  internet only, so it needs the HTTP mode behind your own TLS proxy. Claude Code,
+  Claude Desktop and other local clients need nothing of the kind.
+
 | | |
 |---|---|
-| Runtime | Node.js ≥ 22.17, or Docker, or Home Assistant OS / Supervised |
-| Architecture (Home Assistant app) | amd64, aarch64 |
-| Network | outbound HTTPS to `openrouter.ai`, and to the web pages you name in a job; for claude.ai, a TLS reverse proxy reachable from the internet |
-| Disk | about 56 MB installed, 33 MB of it `pdfjs-dist` with its CMaps and fonts; the optional `@napi-rs/canvas` adds a native binary of about 37 MB that text extraction does not need (`npm install --omit=optional` skips it) |
-| OpenRouter | an API key with its own daily limit |
+| Runtime | Node.js ≥ 22.17 (Claude Desktop runs the extension on its own Node.js), or Docker, or Home Assistant OS / Supervised |
+| Architecture (Home Assistant app, Docker image) | amd64, aarch64 |
+| Network | outbound HTTPS to `openrouter.ai`, and to the web pages you name in a job |
+| Disk | about 56 MB installed, 33 MB of it `pdfjs-dist` with its CMaps and fonts; the optional `@napi-rs/canvas` adds a native binary of about 37 MB that text extraction does not need (`npm install --omit=optional` skips it; the extension and the images leave it out) |
 
 ## Installation
 
-### Claude Code / Claude Desktop (npx)
+No settings file, no model ids, no token to make by hand: the server picks and pins its
+models on the first job, and the HTTP mode generates its own token.
 
-1. Write a config file at `~/.config/cheap-eyes/config.json`, or
-   `%APPDATA%\cheap-eyes\config.json` on Windows (see [Configuration](#configuration)).
-2. Check it (no network, no secrets printed): `npx -y cheap-eyes check-config`
-3. Add the server to Claude Code:
+**Claude Code.** Run this in a terminal and answer the questions:
 
-   ```sh
-   claude mcp add --env CHEAP_EYES_OPENROUTER_KEY=<OPENROUTER_KEY> --transport stdio cheap-eyes -- npx -y cheap-eyes
-   ```
+```sh
+npx -y cheap-eyes init
+```
 
-4. Try it: *"Use eyes_run to list every TODO in /home/me/notes/\*\*/\*.md, with the
-   line it's on."*
+It checks the network (and asks for a proxy where needed), signs you in to OpenRouter
+in the browser or takes a key, picks the models and runs `claude mcp add` for you. Then
+ask: *"Use eyes_run to list every TODO in the markdown files of this project, with the
+line it's on."*
 
-Claude Desktop, `.mcp.json` and a global install:
-[installation](https://github.com/st412m/cheap-eyes/blob/main/docs/installation.md#npx--stdio).
+**Claude Desktop.** Download `cheap-eyes-<version>.mcpb` from the
+[latest release](https://github.com/st412m/cheap-eyes/releases/latest) and open it with
+Claude Desktop. Its settings ask for the OpenRouter key, at least one folder to read
+(the form cannot be saved without one) and a **Proxy** field, to leave empty unless
+OpenRouter refuses your network.
 
-### Home Assistant app
+**Home Assistant.** Add this repository, install **cheap-eyes**, set `openrouter_key`,
+start it, and copy the connector path from the log (or the token from the
+Configuration tab):
 
-Home Assistant renamed *add-ons* to *apps* in 2026.2; on older versions the same menus
-say *Add-ons* and *Add-on Store*.
+[![Open your Home Assistant instance and show the add app repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fst412m%2Fcheap-eyes)
 
-1. Add this repository:
+Or by hand: **Settings → Apps → App Store → ⋮ → Repositories → + Add**, paste
+`https://github.com/st412m/cheap-eyes`. Home Assistant called apps *add-ons* before
+2026.2. Options: [app documentation](https://github.com/st412m/cheap-eyes/blob/main/ha-addon/cheap_eyes/DOCS.md).
 
-   [![Open your Home Assistant instance and show the add app repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fst412m%2Fcheap-eyes)
+**Docker.** `ghcr.io/st412m/cheap-eyes` serves the HTTP mode on port 3400; the key goes
+in the environment, folders are mounted under `/input`, and the log shows the connector
+path once:
 
-   Or by hand: **Settings → Apps → App Store → ⋮ → Repositories → + Add**, paste
-   `https://github.com/st412m/cheap-eyes`, select **Add**.
-2. Find **cheap-eyes** in the store and select **Install**.
-3. In **Configuration**, set `openrouter_key`, an `http_token` of at least 32
-   characters (`openssl rand -hex 32` gives one) and your `read_roots`.
-4. Select **Start**. The app serves MCP on port 3400.
+```sh
+docker run -d --name cheap-eyes -p 127.0.0.1:3400:3400 -e CHEAP_EYES_OPENROUTER_KEY=<OPENROUTER_KEY> -v cheap-eyes-data:/data -v /home/me/notes:/input/notes:ro ghcr.io/st412m/cheap-eyes:0.3.0
+```
 
-Options and the connector URL:
-[app documentation](https://github.com/st412m/cheap-eyes/blob/main/ha-addon/cheap_eyes/DOCS.md).
+`compose.example.yaml` is the same for Compose.
 
-### Docker / HTTP
+**Other MCP clients.** A stdio server started as `npx -y cheap-eyes <folder>...` with
+`CHEAP_EYES_OPENROUTER_KEY` in its environment; `npx -y cheap-eyes init --client other`
+prints the JSON block.
 
-`cheap-eyes serve --http` runs the same server over Streamable HTTP with a token; the
-repository's `Dockerfile` and `compose.example.yaml` wrap it. See
-[installation](https://github.com/st412m/cheap-eyes/blob/main/docs/installation.md#http-mode).
+**claude.ai.** Honestly: it needs the HTTP mode (`cheap-eyes serve --http`, the Docker
+image or the Home Assistant app) behind your own reverse proxy that terminates TLS, and
+then `https://<host>/private_<token>/mcp` as a custom connector (see
+[Connecting to claude.ai](#connecting-to-claudeai)).
+
+Every way in detail, the HTTP mode and the proxy:
+[installation](https://github.com/st412m/cheap-eyes/blob/main/docs/installation.md).
 
 ## Configuration
 
-A JSON config file. The fields to set first:
+Everything works without a file. A stdio server reads the project folder (refused when
+it is the home folder or a drive root), the models are picked on the first job, the
+daily budget is $1. For the rest, `cheap-eyes set` writes the settings file:
 
-| Field | What it is |
-|---|---|
-| `read_roots` | The folders (or single files) the server may read. Absolute paths. |
-| `models` | Aliases: an alias like `fast` is a short name for a list of model ids. |
-| `defaults` | The alias each mode uses when a call names none. |
-| `daily_budget_usd` | Local spending cap per UTC day, default `1.0`. |
-
-```json
-{
-  "read_roots": ["/home/me/notes"],
-  "models": { "fast": { "ids": ["qwen/qwen3.6-35b-a3b"], "params": { "reasoning": { "effort": "none" } } } },
-  "defaults": { "extract": "fast", "draft": "fast", "edits": "fast" }
-}
+```sh
+npx -y cheap-eyes set read_roots /home/me/notes /home/me/logs
+npx -y cheap-eyes set daily_budget_usd 2
+npx -y cheap-eyes check-config
 ```
 
-The key goes in the env var `CHEAP_EYES_OPENROUTER_KEY`, never in the file. Every
-field, env var and file location:
+`check-config` prints every value in force and where it came from (the file, an
+environment variable, the arguments, a default). The key goes in the env var
+`CHEAP_EYES_OPENROUTER_KEY`, never in a file. Every field, variable and file location:
 [configuration](https://github.com/st412m/cheap-eyes/blob/main/docs/configuration.md).
 
 ## Connecting to claude.ai
@@ -208,19 +221,25 @@ Inputs and outputs: [tools](https://github.com/st412m/cheap-eyes/blob/main/docs/
 
 ## Models and cost
 
-No model is pinned in code. You name models in your config under aliases (`fast`,
-`long`, …), and switching means editing the config and restarting. Each alias lists
-model ids in priority order; if one can't be used, the next is tried. The example ids
-were valid on 2026-09-26 and will age. To pick new ones:
+No model id is written in code. When you name none, the server picks them on the first
+job: it takes the cheapest Zero Data Retention models your account allows within a
+price cap (in $1 / out $4 per 1M tokens unless you set one), gives each a built-in test
+job, and pins the two that pass first. **That proves a model works here, not that it
+reads best:** the cheapest model that passes wins, and free variants are not picked.
+To choose by quality, compare models on your own documents with
+[`cheap-eyes bench`](https://github.com/st412m/cheap-eyes/blob/main/docs/bench.md), then
+name one:
 
 ```sh
 cheap-eyes models --candidates
+cheap-eyes set models.fast <id>
+cheap-eyes set defaults.extract fast
 ```
 
-This lists cheap Zero Data Retention models, and shows how well each of your aliases
-passed its checks on your own jobs. If your OpenRouter account's Guardrails don't allow
-a model, cheap-eyes skips it and marks it `blocked by account`. Allow it at
-openrouter.ai → Guardrails if you want it used.
+`models --candidates` lists cheap Zero Data Retention models and shows how well each
+model in use passed its checks on your own jobs. If your OpenRouter account's
+Guardrails don't allow a model, cheap-eyes skips it and marks it `blocked by account`.
+Allow it at openrouter.ai → Guardrails if you want it used.
 
 With cheap models a job costs fractions of a cent. Your key's own daily limit on
 OpenRouter is the real ceiling. On top of that, `daily_budget_usd` (default $1 a day)
@@ -247,11 +266,15 @@ stops calls before they would go over. More:
 ## Troubleshooting
 
 - **OpenRouter answers 403 "Access denied by security policy".** OpenRouter refuses
-  some regions; route the calls through a proxy.
+  some regions; route the calls through a proxy. The refusal names where to set it in
+  your setup.
+- **Every tool call answers with a settings error.** The server started in its setup
+  state because a setting cannot be used; the message names the setting and the fix.
+- **No model passes the pick.** The refusal names each tried id and why; allow more
+  models at openrouter.ai → Guardrails, raise the price cap, or name a model with
+  `cheap-eyes set models.<alias> <id>`.
 - **A model is `blocked by account`.** Allow it at openrouter.ai → Guardrails, or put
   another id in the alias.
-- **The server won't start and names an alias.** A value in `defaults` is not defined
-  in `models`.
 - **The client shows old tools after an update.** Refresh the connector's tool list
   and start a new chat.
 
@@ -267,8 +290,11 @@ More: [troubleshooting](https://github.com/st412m/cheap-eyes/blob/main/docs/trou
 - URLs in a job are fetched by the server with private and local addresses refused,
   also against DNS rebinding.
 - The server writes nowhere outside its own state folder unless you opt into export.
-- In HTTP mode the token works as a password. It needs at least 32 characters and is
-  never logged; put TLS in front. Request bodies over 1 MiB are refused.
+- A stdio server reads the project folder by default, never the home folder or a
+  drive root.
+- In HTTP mode the token works as a password. It needs at least 32 characters; a
+  generated one is printed once and by `cheap-eyes token`, never in request logs,
+  errors or results. Put TLS in front. Request bodies over 1 MiB are refused.
 
 More: [security](https://github.com/st412m/cheap-eyes/blob/main/docs/security.md).
 

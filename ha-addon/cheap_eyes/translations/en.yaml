@@ -4,10 +4,10 @@ configuration:
     description: A dedicated key with its own daily limit on openrouter.ai; that limit is the real spending ceiling.
   http_token:
     name: HTTP token
-    description: At least 32 characters. The connector URL is https://<host>/private_<token>/mcp; anyone with it can use the server.
+    description: Empty = generated on the first start, written here and shown in the log once; clear it for a new one. Your own value needs at least 32 characters. The connector URL is https://<host>/private_<token>/mcp; anyone with it can use the server.
   models:
     name: Models
-    description: Aliases for OpenRouter model ids. The server uses the first id of an alias that is usable and falls back to the next.
+    description: Empty = the server picks models on the first job (cheapest that pass a test job, within the price cap) and pins them. Or aliases for OpenRouter model ids; the server uses the first id of an alias that is usable and falls back to the next.
     fields:
       alias:
         name: Alias
@@ -20,7 +20,7 @@ configuration:
         description: none (recommended for cheap models, reasoning tokens eat the output cap), low, or default (the model's own).
   defaults:
     name: Default alias per mode
-    description: Used when a call names no model. Each value must be an alias defined in Models above; an unknown alias stops the add-on at start.
+    description: Only with Models. Used when a call names no model. Each value must be an alias defined in Models above; an unknown alias stops the app at start. Ignored while Models is empty.
     fields:
       extract:
         name: extract
@@ -36,7 +36,7 @@ configuration:
         description: "JSON fields with a ref and a quote each. Empty = the extract alias. Value: an alias from Models."
   max_price_usd_per_mtok:
     name: Price cap (USD per 1M tokens)
-    description: Skip model ids whose ZDR price is higher. Set both in and out, or leave both empty for no cap.
+    description: A model id counts only when one of its ZDR endpoints fits the cap, and requests go only to endpoints within it. Set both in and out, or leave both empty (picked models then use in 1 / out 4).
     fields:
       in:
         name: Input price cap
@@ -64,7 +64,7 @@ configuration:
     description: IANA zone used to read log timestamps that carry no offset, e.g. UTC or Europe/Berlin.
   https_proxy:
     name: HTTPS proxy
-    description: Empty = direct connection. Otherwise a proxy URL for the calls to openrouter.ai and for https:// pages in files, e.g. http://proxy.example.com:3128.
+    description: Empty = direct connection. Only where OpenRouter refuses your network (HTTP 403). Otherwise a proxy URL for the calls to openrouter.ai and for https:// pages in files, e.g. http://proxy.example.com:3128.
   url_input:
     name: URL input
     description: Allow http(s) URLs in eyes_run files; the app fetches the page itself. Private and local addresses are always refused.

@@ -51,12 +51,22 @@ function bump(map, key, r) {
   if (r.status && r.status !== 'done') a.failed++;
 }
 
-// Totals for today (UTC) and all time, by alias and by model id actually used.
+// Totals for today (UTC) and all time, by alias and by model id actually used. Probes
+// of the model pick are counted apart (count and cost): they are spent within the
+// daily budget but are not jobs.
 export function aggregate(records, today) {
-  const empty = () => ({ jobs: 0, cost: 0, estimated: 0, tokens_in: 0, tokens_out: 0, by_alias: {}, by_model: {} });
+  const empty = () => ({ jobs: 0, cost: 0, estimated: 0, tokens_in: 0, tokens_out: 0, by_alias: {}, by_model: {}, probes: { count: 0, cost: 0 } });
   const res = { today: empty(), all: empty() };
   for (const r of records) {
-    if (r.dry_run || r.tool !== 'eyes_run') continue;
+    if (r.dry_run) continue;
+    if (r.tool === 'probe') {
+      for (const s of String(r.ts).startsWith(today) ? [res.all, res.today] : [res.all]) {
+        s.probes.count++;
+        s.probes.cost += r.cost ?? 0;
+      }
+      continue;
+    }
+    if (r.tool !== 'eyes_run') continue;
     const scopes = [res.all];
     if (String(r.ts).startsWith(today)) scopes.push(res.today);
     for (const s of scopes) {

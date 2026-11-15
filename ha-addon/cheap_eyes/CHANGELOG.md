@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0 — 2026-11-15
+
+- **No token to make by hand.** With `http_token` empty, the app generates a token on
+  the first start, writes it into the option (visible on the Configuration tab) and
+  prints the connector path once in the log. Clear the option to get a new one. An
+  install that already has a token keeps it, with the same connector URL.
+- **No model ids to look up.** A fresh install has no models in its options: the first
+  job picks the cheapest models that pass a built-in test job within the price cap and
+  pins them. Existing installs keep their models and defaults exactly as they are.
+- Refusals point to the app options (for example the `https_proxy` option when
+  OpenRouter refuses your network).
+- With a price cap set, requests go only to endpoints within it.
+- `eyes_stats` shows the Node version and whether the proxy is in use.
+
 ## 0.2.1 — 2026-10-26
 
 - Security updates of the libraries the app is built on (MCP SDK, zod, mail parser).

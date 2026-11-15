@@ -26,10 +26,20 @@ untrusted output (`--- untrusted model output ---` … `--- end ---`).
 - Your OpenRouter account's own guardrails and privacy settings apply on top; see
   [account availability](models.md#account-availability).
 - The API key comes only from the env var `CHEAP_EYES_OPENROUTER_KEY`. It is never
-  logged, echoed or put in error messages.
+  logged, echoed or put in error messages, and no cheap-eyes command writes it to a
+  file: `cheap-eyes set` refuses it, and `cheap-eyes init` hands it only to the client
+  (`claude mcp add`, or the JSON block it prints).
+- A proxy URL may carry a login: the start line, `check-config` and `eyes_stats` show
+  only the proxy state, never the URL.
 
 ## Read roots and paths
 
+- Without `read_roots` from any source, a stdio server reads the project folder
+  (`CLAUDE_PROJECT_DIR`, else its working directory), resolved with `realpath`. It is
+  refused as a default when it is the home folder, a folder that contains the home
+  folder, or a filesystem or drive root; then no file is read until a folder is named
+  (URLs still work). `serve --http` has no default. See
+  [default read root](configuration.md#default-read-root).
 - `files` takes absolute paths or globs that start inside a `read_roots` entry;
   relative paths are refused.
 - Each file is resolved with `realpath` and must still lie inside a read root, compared
@@ -118,13 +128,18 @@ With `write_roots` empty (the default) the server writes nowhere outside its
 
 ## HTTP mode
 
-- A token of at least 32 characters is required; the server refuses to start without
-  one. It may contain only `A-Z a-z 0-9 . _ ~ -`, since it is also a URL path segment.
-  It is compared in constant time.
+- A token of at least 32 characters is required. It comes from `--token-file`, env
+  `CHEAP_EYES_HTTP_TOKEN` or `<state_dir>/token`; with none of them the server
+  generates one (32 random bytes as 64 hex characters) and saves it there with mode
+  0600 (on Windows the file is protected by the rights of the user profile). It is
+  never read from the settings file or the command line. It may contain only
+  `A-Z a-z 0-9 . _ ~ -`, since it is also a URL path segment. It is compared in
+  constant time.
 - A wrong path gets a bare 404 without `WWW-Authenticate`. `/.well-known/oauth-*` is
   404 too, so claude.ai sees an authless server and never starts an OAuth flow.
 - A wrong bearer token gets 401.
-- Neither the token nor the request path is ever logged.
+- The token is printed once when it is generated and by `cheap-eyes token`; never in
+  request logs, errors or results. The request path is never logged.
 - A request body over 1 MiB gets 413 before it is parsed.
 - Tool arguments with more than 2000 array elements and object members in total are
   refused before validation (over stdio too).
@@ -143,7 +158,8 @@ Whoever has it can, until you change it:
   text, unless `url_input` is `false`;
 - spend money up to `daily_budget_usd` per day and the key's own limit.
 
-Change the token and restart the server; consider rotating the OpenRouter key.
+Change the token (`cheap-eyes token --new`, or a new value where you set it) and
+restart the server; consider rotating the OpenRouter key.
 
 If the export folder is shared with other tools, the server writes there with its own
 rules only: whatever conventions other tools keep in that folder (for example a notes

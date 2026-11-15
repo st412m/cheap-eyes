@@ -1,0 +1,77 @@
+{
+  "manifest_version": "0.3",
+  "name": "cheap-eyes",
+  "display_name": "cheap-eyes",
+  "version": "0.3.0",
+  "description": "Hands bulk reading to cheap OpenRouter models and checks every quoted line against the source.",
+  "long_description": "Claude gives large logs, documents and web pages to a cheap model through OpenRouter (zero-data-retention endpoints only) and gets back quotes and line references that cheap-eyes checks mechanically against the source, after masking secrets. The models are picked and tested on first use within a price cap, and a daily budget limits the spend. Needs an OpenRouter account with credits; set a spending limit on the key.",
+  "author": {
+    "name": "st412m",
+    "url": "https://github.com/st412m"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/st412m/cheap-eyes"
+  },
+  "homepage": "https://github.com/st412m/cheap-eyes",
+  "documentation": "https://github.com/st412m/cheap-eyes#readme",
+  "support": "https://github.com/st412m/cheap-eyes/issues",
+  "license": "MIT",
+  "icon": "icon.png",
+  "keywords": ["openrouter", "logs", "documents", "reading", "delegation"],
+  "server": {
+    "type": "node",
+    "entry_point": "src/cli.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/src/cli.js", "${user_config.read_roots}"],
+      "env": {
+        "CHEAP_EYES_OPENROUTER_KEY": "${user_config.openrouter_key}",
+        "CHEAP_EYES_HTTPS_PROXY": "${user_config.https_proxy}",
+        "CHEAP_EYES_DAILY_BUDGET_USD": "${user_config.daily_budget_usd}",
+        "CHEAP_EYES_SETTINGS_UI": "the extension settings in Claude Desktop"
+      }
+    }
+  },
+  "user_config": {
+    "openrouter_key": {
+      "type": "string",
+      "title": "OpenRouter key",
+      "description": "An OpenRouter API key (openrouter.ai → Keys). Give it a spending limit there: it is the real ceiling.",
+      "sensitive": true,
+      "required": true
+    },
+    "read_roots": {
+      "type": "directory",
+      "title": "Folders to read",
+      "description": "The folders cheap-eyes may read files from. URLs work without any folder.",
+      "multiple": true,
+      "required": true
+    },
+    "https_proxy": {
+      "type": "string",
+      "title": "Proxy",
+      "description": "Only where OpenRouter refuses your network: http://host:port, with the login in it when the proxy needs one. Empty: a direct connection.",
+      "required": false
+    },
+    "daily_budget_usd": {
+      "type": "number",
+      "title": "Daily budget (USD)",
+      "description": "The most cheap-eyes spends per day (UTC); a job that would go over it is refused.",
+      "required": false,
+      "default": 1,
+      "min": 0.01
+    }
+  },
+  "tools": [
+    { "name": "eyes_run", "description": "Run a cheap reading job over files or URLs; quotes are checked against the source" },
+    { "name": "eyes_result", "description": "Read a job result, its check report or the source text" },
+    { "name": "eyes_stats", "description": "Spend, budget, key status and the models in use" }
+  ],
+  "compatibility": {
+    "platforms": ["darwin", "win32"],
+    "runtimes": {
+      "node": ">=22.17"
+    }
+  }
+}

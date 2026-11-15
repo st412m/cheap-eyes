@@ -14,8 +14,22 @@ intercepted.
 
 ## Installing it
 
-Install cheap-eyes globally, find the path with `npm root -g`, and register the hook in
-`~/.claude/settings.json` (all projects) or `.claude/settings.json` (one project):
+```
+npm install -g cheap-eyes
+cheap-eyes hook install            # ~/.claude/settings.json: all projects
+cheap-eyes hook install --project  # .claude/settings.json of the current folder
+cheap-eyes hook remove [--project] # takes it out again
+```
+
+The command adds one `PreToolUse` entry for `Read` with the absolute path of this
+installation's hook, keeps every other setting in the file, does nothing when the entry
+is already there, and refuses a settings file that is not valid JSON. It refuses to run
+from the npx cache, whose path changes: install cheap-eyes globally first.
+
+### By hand
+
+Find the path with `npm root -g` and register the hook in `~/.claude/settings.json`
+(all projects) or `.claude/settings.json` (one project):
 
 ```json
 {

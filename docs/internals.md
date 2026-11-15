@@ -62,6 +62,10 @@ and must not yield) are generated outside the repository and committed as binary
 files; `test/bench/` is the synthetic [bench](bench.md) suite.
 
 `tools/check-release.mjs` checks that `package.json`, `server.json` (its version and
-`packages[0].version`), the app's `config.yaml` and `Dockerfile`, the root `Dockerfile`
-and `compose.example.yaml` carry one version, and that `server.json` stays within the
-MCP Registry limits.
+`packages[0].version`), `manifest.json`, the app's `config.yaml` and `Dockerfile`, the
+root `Dockerfile`, the image line of `compose.example.yaml` and the `docker run` lines
+of `README.md` and `docs/installation.md` carry one version, that
+`server.json` stays within the MCP Registry limits, and that `manifest.json` names the
+three tools of `src/tools.js`, the entry point of `package.json`, no `HTTPS_PROXY`, and
+a 512×512 `icon.png`. `tools/pack-mcpb.mjs` builds the Claude Desktop extension from an
+`npm pack` tarball.

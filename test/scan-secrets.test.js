@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
-import { fileOptions, scanText } from '../tools/scan-secrets.mjs';
+import { fileOptions, listFiles, scanText } from '../tools/scan-secrets.mjs';
 import { tmpDir } from './helpers.js';
 
 const SCRIPT = path.join(import.meta.dirname, '..', 'tools', 'scan-secrets.mjs');
@@ -91,4 +91,37 @@ test('every finding names its file, and the counts add up', () => {
   assert.match(r.stdout, /leak\.md:1: sk_key/);
   assert.match(r.stdout, /missing\.md: cannot read \(ENOENT\)/, 'an unreadable file is a named finding on stdout');
   assert.match(r.stdout, /scan-secrets: 2 finding\(s\) in 2 of 3 file\(s\)/);
+});
+
+test('outside a git repository the whole tree is scanned and one line says git was not used', () => {
+  const tree = tmpDir();
+  fs.mkdirSync(path.join(tree, 'tools'));
+  fs.mkdirSync(path.join(tree, 'src'));
+  fs.copyFileSync(SCRIPT, path.join(tree, 'tools', 'scan-secrets.mjs'));
+  fs.copyFileSync(path.join(import.meta.dirname, '..', 'src', 'mask.js'), path.join(tree, 'src', 'mask.js'));
+  fs.mkdirSync(path.join(tree, 'docs'));
+  fs.writeFileSync(path.join(tree, 'docs', 'notes.md'), `host ${ip(192, 168, 0, 9)}\n`);
+  fs.writeFileSync(path.join(tree, 'README.md'), 'nothing here\n');
+  fs.mkdirSync(path.join(tree, 'node_modules', 'dep'), { recursive: true });
+  fs.writeFileSync(path.join(tree, 'node_modules', 'dep', 'x.md'), `host ${ip(10, 1, 2, 3)}\n`);
+  const script = path.join(tree, 'tools', 'scan-secrets.mjs');
+  // No git on PATH, and a git that finds no repository above the tree.
+  const envs = [
+    { SystemRoot: process.env.SystemRoot, PATH: '' },
+    { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(tree) },
+  ];
+  for (const env of envs) {
+    const r = spawnSync(process.execPath, [script], { cwd: tree, env, encoding: 'utf8' });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout, /^scan-secrets: git is not available here \((git not found|git ls-files failed: .+)\); scanning every file of the tree but node_modules and \.git$/m);
+    assert.match(r.stdout, /^docs\/notes\.md:1: private_ipv4$/m);
+    assert.doesNotMatch(r.stdout, /node_modules\//, 'node_modules is not scanned');
+    assert.match(r.stdout, /scan-secrets: 1 finding\(s\) in 1 of 4 file\(s\)/);
+    assert.equal(r.stderr, '', 'no stack trace, no git message');
+  }
+});
+
+test('inside the repository the files come from git, as before', () => {
+  const r = listFiles(path.join(import.meta.dirname, '..'), { git: () => ['a.md', 'b.md'] });
+  assert.deepEqual(r, { files: ['a.md', 'b.md'], note: null });
 });

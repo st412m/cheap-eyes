@@ -27,7 +27,7 @@ export const eyesRunInput = z.strictObject({
       if (s) ctx.addIssue({ code: 'custom', message: refusedSuffixMessage(s) });
     })
     .optional()
-    .describe('Model alias from config; default per mode'),
+    .describe('Model alias from the settings; "auto" (the models the server picked) when the settings name none; default per mode'),
   files: z
     .array(z.string().min(1))
     .min(1)

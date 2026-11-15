@@ -1,6 +1,10 @@
-// eyes_run: the input pipeline (spec steps 1–5), model resolution, calls, result.
+// eyes_run: the input pipeline (files, masking, filters, chunks, request bodies), model
+// resolution, the model calls and the result.
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { pageRanges } from 'doclines';
+import { budgetAction, noKeyText, rootsAction } from './actions.js';
+import { openRouterKey } from './config.js';
 import { BudgetError, ledgerFor } from './budget.js';
 import { InputError } from './errors.js';
 import { expandFiles } from './input/files.js';
@@ -10,9 +14,11 @@ import { writeSources } from './sources.js';
 import { assignNames, chunkBlocks, estimateTokens, fileHeader, fileItems, splitChunk } from './input/render.js';
 import { resolveTimeOptions, timeWindow } from './input/timefilter.js';
 import { Masker } from './mask.js';
-import { capMaxTokens, loadAccount, noUsableModel, promptCost, screenIds, summarizeZdr, worstCaseCost } from './models.js';
+import { capMaxTokens, loadAccount, maxPriceOf, noUsableModel, promptCost, screenIds, summarizeZdr, worstCaseCost } from './models.js';
 import { ApiError, OpenRouter } from './openrouter.js';
+import { autoConfig, capFor, capText, peekAuto, PICK_HINT, pickCandidates, pickModels, readPin, resolveAuto, setAsidePin, underPickLock, usesAuto } from './pick.js';
 import { placeOf } from './place.js';
+import { PROBE_FILE, PROBE_MAX_TOKENS, PROBE_TASK, PROBE_TEXT, PROBE_TIMEOUT_MS, probeVerdict } from './probe.js';
 import { systemPrompt, userMessage } from './prompts.js';
 import { badItems, checkJob, chunkView, describeItem, summaryLine } from './checks.js';
 import { checkSchemaJob, parseSchema, SCHEMA_PROBLEMS, schemaSummaryLine, schemaTask } from './schema.js';
@@ -47,7 +53,9 @@ export function resolveModelChoice(model, mode, config) {
 }
 
 // The exact request body. Server-owned fields are set last so config params can never replace them.
-export function buildRequestBody({ modelId, params, system, user, maxTokens }) {
+// `maxPrice`: { prompt, completion } in USD per 1M tokens (maxPriceOf), or null for no cap;
+// OpenRouter then routes only to endpoints within it and fails the request when none fits.
+export function buildRequestBody({ modelId, params, system, user, maxTokens, maxPrice = null }) {
   return {
     ...params,
     model: modelId,
@@ -55,7 +63,7 @@ export function buildRequestBody({ modelId, params, system, user, maxTokens }) {
       { role: 'system', content: system },
       { role: 'user', content: user },
     ],
-    provider: { zdr: true, data_collection: 'deny' },
+    provider: { zdr: true, data_collection: 'deny', ...(maxPrice ? { max_price: { prompt: maxPrice.prompt, completion: maxPrice.completion } } : {}) },
     plugins: [{ id: 'context-compression', enabled: false }],
     max_completion_tokens: maxTokens,
   };
@@ -80,7 +88,8 @@ function keepsSource(f, read, mode) {
   return Boolean(f.url) || read.format !== 'text' || mode === 'schema';
 }
 
-export async function prepareInput(args, { config, platform = process.platform, now = Date.now(), urlDeps }) {
+// `rootsHint`: the action for a path outside the read roots (actions.js rootsAction).
+export async function prepareInput(args, { config, platform = process.platform, now = Date.now(), urlDeps, rootsHint }) {
   const { mode } = args;
   if (args.grep) compileCheck(args.grep.pattern, args.grep.ignore_case);
   // Refused before any file is read.
@@ -88,7 +97,7 @@ export async function prepareInput(args, { config, platform = process.platform, 
   const timeOpts = args.time ? resolveTimeOptions(args.time, config.time.default_tz) : null;
 
   // 1. expand and guard
-  const { files, skipped } = await expandFiles(args.files, { config, platform });
+  const { files, skipped } = await expandFiles(args.files, { config, platform, rootsHint });
 
   // 2. read; range → time, then 3. mask every candidate line, then grep over the
   // masked text only (grep on raw text would let a caller probe secrets char by char).
@@ -246,7 +255,7 @@ export async function prepareJob(args, { config, platform, contextTokens, now })
  * are runtime fallbacks. Blocked ids are skipped without a model call. `account`: Set
  * of allowed ids, or null when unknown.
  */
-export function planJob(input, choice, { zdr, config, requested, account = null }) {
+export function planJob(input, choice, { zdr, config, requested, account = null, hint = choice.hint }) {
   const screened = screenIds(choice.ids, zdr, config, account);
   const extra = [];
   const usable = [];
@@ -267,7 +276,7 @@ export function planJob(input, choice, { zdr, config, requested, account = null 
     }
     usable.push({ ...s, ...chunked, maxTokens });
   }
-  if (usable.length === 0) throw noUsableModel(choice.label, screened, extra);
+  if (usable.length === 0) throw noUsableModel(choice.label, screened, extra, hint);
   const [primary, ...fallbacks] = usable;
   return { primary, fallbacks, chunks: primary.chunks, budget: primary.budget };
 }
@@ -303,6 +312,17 @@ function actualCost(res, facts) {
   return { cost: (pin * facts.priceIn + pout * facts.priceOut) / 1e6 + (facts.priceRequest ?? 0), estimated: true };
 }
 
+// The daily budget refusal names where daily_budget_usd is set and how to change it;
+// other budget refusals (the bench's --max-usd) pass as they are.
+function reserveOrExplain(ledger, amount, budget, hint) {
+  try {
+    return ledger.reserve(amount, budget);
+  } catch (e) {
+    if (e instanceof BudgetError && e.daily && hint) throw new BudgetError(`${e.message}; ${hint}`, { daily: true });
+    throw e;
+  }
+}
+
 // A failed attempt may have reached the provider (network error, timeout, cancel in
 // flight, 5xx) and may be billed for the prompt; a 4xx was refused before inference.
 function mayHaveReachedProvider(e) {
@@ -315,25 +335,28 @@ function mayHaveReachedProvider(e) {
  */
 async function runChunk(chunk, plan, run) {
   const { or, ledger, config, choice, input, requested, sleep, signal } = run;
+  const retries = run.limits?.retries ?? RETRIES;
+  const timeoutMs = run.limits?.timeoutMs ?? config.timeout_s * 1000;
   const candidates = [plan.primary, ...plan.fallbacks];
   let lastErr = null;
   let failedCost = 0;
   const tried = [];
+  const failures = new Map(); // id → the last error OpenRouter answered for it
   for (const cand of candidates) {
     const maxTokens = cand === plan.primary ? plan.primary.maxTokens : capMaxTokens(requested, cand.facts, cand.context, chunk.promptTokens);
     if (maxTokens < 1 || chunk.promptTokens + maxTokens > cand.context) continue;
     if (cand.facts.maxPrompt && chunk.promptTokens > cand.facts.maxPrompt) continue;
     tried.push(cand.id);
-    const body = buildRequestBody({ modelId: cand.id, params: choice.params, system: input.system, user: chunk.user, maxTokens });
-    for (let attempt = 0; attempt <= RETRIES; attempt++) {
+    const body = buildRequestBody({ modelId: cand.id, params: choice.params, system: input.system, user: chunk.user, maxTokens, maxPrice: maxPriceOf(config.max_price_usd_per_mtok) });
+    for (let attempt = 0; attempt <= retries; attempt++) {
       if (signal?.aborted) throw new ApiError('cancelled', { status: 0, errorType: 'cancelled' });
-      const handle = ledger.reserve(worstCaseCost(cand.facts, chunk.promptTokens, maxTokens), config.daily_budget_usd);
+      const handle = reserveOrExplain(ledger, worstCaseCost(cand.pricing, chunk.promptTokens, maxTokens), config.daily_budget_usd, run.budgetHint);
       const t0 = Date.now();
       let res;
       try {
-        res = await or.chat(body, { signal, timeoutMs: config.timeout_s * 1000 });
+        res = await or.chat(body, { signal, timeoutMs });
       } catch (e) {
-        const est = e instanceof ApiError && mayHaveReachedProvider(e) ? promptCost(cand.facts, chunk.promptTokens) : 0;
+        const est = e instanceof ApiError && mayHaveReachedProvider(e) ? promptCost(cand.pricing, chunk.promptTokens) : 0;
         ledger.settle(handle, est);
         if (est > 0) {
           failedCost += est;
@@ -342,14 +365,15 @@ async function runChunk(chunk, plan, run) {
         }
         if (!(e instanceof ApiError) || e.errorType === 'cancelled') throw e;
         lastErr = e;
-        if (isRetryable(e) && attempt < RETRIES) {
+        failures.set(cand.id, e);
+        if (isRetryable(e) && attempt < retries) {
           await sleep(backoffMs(attempt, e.retryAfter));
           continue;
         }
         if (tryNextId(e)) break;
         throw e;
       }
-      const { cost, estimated } = actualCost(res, cand.facts);
+      const { cost, estimated } = actualCost(res, cand.pricing);
       ledger.settle(handle, cost);
       if (estimated) run.extra.estimated = true;
       const choice0 = res.choices?.[0] ?? {};
@@ -371,8 +395,23 @@ async function runChunk(chunk, plan, run) {
       };
     }
   }
-  if (lastErr) throw new ApiError(`all ids failed (${tried.join(', ')}): ${lastErr.message}`, { status: lastErr.status, errorType: lastErr.errorType });
+  if (lastErr) {
+    const each = [...failures].map(([id, e]) => `${id}: ${chatFailureText(e, config.max_price_usd_per_mtok)}`).join('; ');
+    throw new ApiError(`all ids failed (${tried.join(', ')}): ${each}${choice.hint ? ` — ${choice.hint}` : ''}`, { status: lastErr.status, errorType: lastErr.errorType });
+  }
   throw new InputError(`no id of ${choice.label} fits chunk ${chunk.index}`);
+}
+
+// OpenRouter answers 404 "No endpoints found that satisfy the max price" when no
+// endpoint is within provider.max_price at call time. Prices can rise after the ZDR
+// list was read (it is cached for hours), so the screening passed and the call did not.
+export const MAX_PRICE_REFUSAL_RE = /satisfy the max price/i;
+
+export function chatFailureText(e, cap) {
+  if (cap && e.status === 404 && MAX_PRICE_REFUSAL_RE.test(e.message)) {
+    return `no ZDR endpoint within the price cap ${capText(cap)} at call time (OpenRouter: ${e.message})`;
+  }
+  return e.message;
 }
 
 // Run chunks with at most `limit` in flight. After the first failure or a cancel no new
@@ -425,11 +464,11 @@ function commonLines(input) {
   return lines;
 }
 
-function dryRunHeader(id, input, plan, choice, modelId, contextNote, maxTokens) {
+function dryRunHeader(id, input, plan, choice, modelId, contextNote, maxTokens, modelLine) {
   const lines = [];
   lines.push('eyes_run DRY RUN: nothing was sent to a model');
   lines.push(`result: ${id} (exact request bodies; read with eyes_result)`);
-  lines.push(`model: ${choice.label} -> ${modelId}`);
+  lines.push(modelLine ?? `model: ${choice.label} -> ${modelId}`);
   lines.push(`mode: ${input.mode}`);
   lines.push(`files: ${input.files.length}, lines sent: ${input.files.reduce((s, f) => s + f.lines_sent, 0)}, input bytes: ${input.jobBytes}`);
   const est = plan.chunks.reduce((s, c) => s + c.promptTokens, 0);
@@ -459,7 +498,15 @@ function runHeader(id, { input, choice, rec, outs, checks, text, status, error, 
   if (exported?.length) lines.push(`export: ${exported.join(', ')}`);
   if (exportError) lines.push(`export failed: ${exportError}`);
   const used = [...new Set(done.map((o) => o.model))];
-  lines.push(`model: ${choice.label} -> ${rec.primary}${used.length ? ` (used: ${used.join(', ')})` : ''}`);
+  if (choice.modelLine) {
+    // The picked models: the line as it was decided (pinned, picked, re-picked); the
+    // ids used follow on their own line when they are not just the first one.
+    lines.push(choice.modelLine);
+    if (used.length && (used.length > 1 || used[0] !== rec.primary)) lines.push(`used: ${used.join(', ')}`);
+    for (const n of choice.notes ?? []) lines.push(n);
+  } else {
+    lines.push(`model: ${choice.label} -> ${rec.primary}${used.length ? ` (used: ${used.join(', ')})` : ''}`);
+  }
   if (accountNote) lines.push(accountNote);
   lines.push(`mode: ${input.mode}; files: ${input.files.length}; chunks: ${done.length}/${outs.length}`);
   lines.push(`tokens in ${rec.tokens_in} / out ${rec.tokens_out}; cost $${rec.cost.toFixed(6)}${costNote(rec)}; ${rec.ms} ms`);
@@ -523,22 +570,23 @@ const PROBE_ID = '2000-01-01_000000-extract-000000';
 // ---- eyes_run ----
 
 export async function eyesRun(args, ctx, deps = {}) {
-  const { config, resultsDir } = ctx;
+  const { config } = ctx;
   const platform = deps.platform ?? process.platform;
   const nowFn = deps.now ?? (() => Date.now());
-  const key = deps.key !== undefined ? deps.key : (process.env.CHEAP_EYES_OPENROUTER_KEY || null);
+  const key = deps.key !== undefined ? deps.key : openRouterKey();
   checkModeArgs(args);
   // grep: no model, no OpenRouter call, no key, no budget.
   if (args.mode === 'grep') return grepRun(args, ctx, { ...deps, platform, nowFn });
   if (args.dry_run && args.export_to !== undefined) throw new InputError('export_to is not used with dry_run (the request bodies stay in the results store)');
   if (args.dry_run && args.async) throw new InputError('async is not used with dry_run');
   if (args.export_to !== undefined) await planExport({ config, exportTo: args.export_to, id: PROBE_ID, platform });
-  if (!args.dry_run && !key) throw new InputError('OpenRouter key is not set (env CHEAP_EYES_OPENROUTER_KEY)');
+  if (!args.dry_run && !key) throw new InputError(noKeyText());
 
-  const choice = resolveModelChoice(args.model, args.mode, config);
+  const auto = usesAuto(args.model, args.mode, config);
+  const named = auto ? null : resolveModelChoice(args.model, args.mode, config);
   const requested = args.max_tokens ?? DEFAULT_MAX_TOKENS[args.mode];
   const or = new OpenRouter({ key, fetch: deps.fetch ?? globalThis.fetch, now: nowFn });
-  const input = await prepareInput(args, { config, platform, now: nowFn(), urlDeps: deps.url });
+  const input = await prepareInput(args, { config, platform, now: nowFn(), urlDeps: deps.url, rootsHint: rootsAction(ctx) });
 
   // Live facts: the public ZDR list and, for a real run, the models the account allows
   // (guardrails, privacy settings). In dry_run the ZDR list is the only network call.
@@ -557,14 +605,74 @@ export async function eyesRun(args, ctx, deps = {}) {
     args.dry_run ? null : loadAccount(or),
   ]);
 
-  if (args.dry_run) return dryRun(args, ctx, { input, choice, requested, zdr, zdrError });
+  if (args.dry_run) {
+    if (!auto) return dryRun(args, ctx, { input, choice: named, requested, zdr, zdrError });
+    // Never probes, never picks, never touches the pin.
+    const peek = peekAuto({ stateDir: stateDirOf(ctx), config, zdr });
+    return dryRun(args, { ...ctx, config: peek.config }, { input, choice: peek.choice, requested, zdr, zdrError, modelLine: peek.modelLine });
+  }
   if (!zdr) throw new InputError(`cannot resolve a model: the ZDR endpoint list is unavailable (${zdrError})`);
 
-  const plan = planJob(input, choice, { zdr, config, requested, account: account.ids });
-  plan.accountNote = account.error ? `account availability: unknown (${account.error})` : null;
   const ledger = deps.ledger ?? ledgerFor(stateDirOf(ctx));
   await ledger.ensure();
+  let choice = named;
+  let jobCtx = ctx;
+  if (auto) {
+    const stateDir = stateDirOf(ctx);
+    const probeDeps = { ...deps, or, zdr, account, ledger, nowFn, platform };
+    let a;
+    try {
+      a = await resolveAuto({
+        stateDir,
+        config,
+        zdr,
+        accountIds: account.ids,
+        now: nowFn,
+        pick: (seen) =>
+          underPickLock(
+            stateDir,
+            seen,
+            async () =>
+              pickModels({
+                zdr,
+                // Without the account list the public text models stand in for it.
+                allowed: account.list ?? (await or.textModels()),
+                accountKnown: Boolean(account.ids),
+                cap: capFor(config),
+                now: nowFn,
+                runProbe: (id) => runProbe(id, ctx, probeDeps),
+              }),
+            { sleep: deps.lockSleep, now: nowFn },
+          ),
+      });
+    } catch (e) {
+      if (e instanceof ApiError) throw new InputError(`cannot pick a model: ${e.message}`);
+      throw e;
+    }
+    choice = { ...a.choice, modelLine: a.modelLine, notes: a.notes, hint: PICK_HINT };
+    jobCtx = { ...ctx, config: a.config };
+  }
+
+  const res = await runPrepared({ args, ctx: jobCtx, input, choice, zdr, account, ledger, or, deps, nowFn, platform, requested, tool: 'eyes_run' });
+  if (res.async) return res;
+  if (res.status !== 'done') {
+    const spent = res.rec.cost > 0 ? `; spent $${res.rec.cost.toFixed(6)}${costNote(res.rec)}` : '';
+    throw new InputError(`${res.error} — result ${res.id} saved as ${res.status} with ${res.outs.length}/${res.rec.chunks} chunk(s)${spent}; read it with eyes_result`);
+  }
+  return res;
+}
+
+/**
+ * Plan, start and (unless async) finish one model job on prepared input. Returns the
+ * finished job (done or not) or, for async, the started-job answer. `tool` goes into
+ * the usage log: "eyes_run", or "probe" for the probe of the model pick.
+ */
+async function runPrepared({ args, ctx, input, choice, zdr, account, ledger, or, deps, nowFn, platform, requested, tool, limits = null }) {
+  const { config, resultsDir } = ctx;
+  const plan = planJob(input, choice, { zdr, config, requested, account: account.ids });
+  plan.accountNote = account.error ? `account availability: unknown (${account.error})` : null;
   const chunks = plan.chunks.map((c, i) => ({ ...c, index: i + 1 }));
+  const modelLine = choice.modelLine ?? `model: ${choice.label} -> ${plan.primary.id}`;
 
   const created = new Date(nowFn()).toISOString();
   const id = await allocateResult(
@@ -579,7 +687,7 @@ export async function eyesRun(args, ctx, deps = {}) {
       alias: choice.alias,
       primary: plan.primary.id,
       async: Boolean(args.async),
-      header: `eyes_run running: ${rid}\nmodel: ${choice.label} -> ${plan.primary.id}\nmode: ${args.mode}; files: ${input.files.length}; chunks: ${chunks.length}`,
+      header: `eyes_run running: ${rid}\n${modelLine}\nmode: ${args.mode}; files: ${input.files.length}; chunks: ${chunks.length}`,
     }),
     new Date(nowFn()),
   );
@@ -600,9 +708,11 @@ export async function eyesRun(args, ctx, deps = {}) {
     input,
     requested,
     sleep: deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+    budgetHint: budgetAction(ctx),
+    limits,
     signal: controller.signal,
   };
-  job.promise = execute({ id, args, ctx, input, choice, plan, run, chunks, job, created, nowFn, platform }).finally(() => running.delete(id));
+  job.promise = execute({ id, args, ctx, input, choice, plan, run, chunks, job, created, nowFn, platform, tool }).finally(() => running.delete(id));
   running.set(id, job);
 
   if (args.async) {
@@ -612,24 +722,94 @@ export async function eyesRun(args, ctx, deps = {}) {
       async: true,
       header: [
         `eyes_run started (async): ${id}`,
-        `model: ${choice.label} -> ${plan.primary.id}; mode: ${args.mode}; files: ${input.files.length}; chunks: ${chunks.length}`,
+        `${modelLine}; mode: ${args.mode}; files: ${input.files.length}; chunks: ${chunks.length}`,
+        ...(choice.notes ?? []),
         `poll: eyes_result {"id": "${id}"}; cancel: eyes_result {"id": "${id}", "cancel": true}`,
       ].join('\n'),
     };
   }
-  const res = await job.promise;
-  if (res.status !== 'done') {
-    const spent = res.rec.cost > 0 ? `; spent $${res.rec.cost.toFixed(6)}${costNote(res.rec)}` : '';
-    throw new InputError(`${res.error} — result ${id} saved as ${res.status} with ${res.outs.length}/${res.rec.chunks} chunk(s)${spent}; read it with eyes_result`);
-  }
-  return res;
+  return job.promise;
 }
+
+/**
+ * `cheap-eyes models --pick`: pick again now, whether or not a pin exists, under the
+ * same lock as a job. Returns { pin, picked, cands, notes, account }; throws InputError
+ * (with `probes` when any ran) when nothing passes.
+ */
+export async function pickAgain(ctx, deps = {}) {
+  const { config } = ctx;
+  const named = Object.keys(config.models);
+  if (named.length) throw new InputError(`the settings name models (${named.join(', ')}): picked models are used only when the settings name none`);
+  const key = deps.key !== undefined ? deps.key : openRouterKey();
+  if (!key) throw new InputError(noKeyText());
+  const nowFn = deps.now ?? (() => Date.now());
+  const platform = deps.platform ?? process.platform;
+  const or = new OpenRouter({ key, fetch: deps.fetch ?? globalThis.fetch, now: nowFn });
+  const [zdrList, account] = await Promise.all([or.zdrEndpoints(), loadAccount(or)]);
+  const zdr = summarizeZdr(zdrList);
+  const allowed = account.list ?? (await or.textModels());
+  const cap = capFor(config);
+  const stateDir = stateDirOf(ctx);
+  const notes = [];
+  const read = readPin(stateDir);
+  if (read.error) {
+    const aside = setAsidePin(stateDir, nowFn());
+    notes.push(`the pin file could not be used (${read.error})${aside ? `; kept as ${aside}` : ''}`);
+  }
+  const ledger = deps.ledger ?? ledgerFor(stateDir);
+  await ledger.ensure();
+  const probeDeps = { ...deps, or, zdr, account, ledger, nowFn, platform };
+  const got = await underPickLock(
+    stateDir,
+    read.pin?.picked_at ?? null,
+    () => pickModels({ zdr, allowed, accountKnown: Boolean(account.ids), cap, now: nowFn, runProbe: (id) => runProbe(id, ctx, probeDeps) }),
+    { sleep: deps.lockSleep, now: nowFn },
+  );
+  return { ...got, cands: pickCandidates(zdr, allowed, cap), notes, account };
+}
+
+/**
+ * The probe of one candidate: the built-in log and task through the normal extract
+ * pipeline (ZDR, reasoning effort "none", the cap for picked models, the daily budget,
+ * the usage log with tool "probe"), but one call of at most 60 s without retries.
+ * Returns { id, ok, reason, cost, ms } and passes it to `deps.onProbe` when given. A
+ * daily budget refusal stops the pick instead of failing the next candidates the same way.
+ */
+export async function runProbe(id, ctx, deps) {
+  const t0 = Date.now();
+  const report = (r) => {
+    const out = { ...r, ms: Date.now() - t0 };
+    deps.onProbe?.(out);
+    return out;
+  };
+  const { zdr, account, ledger, or, nowFn = () => Date.now(), platform = process.platform } = deps;
+  const dir = path.join(stateDirOf(ctx), 'probe');
+  await fsp.mkdir(dir, { recursive: true });
+  const file = path.join(dir, PROBE_FILE);
+  await fsp.writeFile(file, PROBE_TEXT);
+  const config = { ...autoConfig(ctx.config), read_roots: [dir], write_roots: [], export_dir: undefined, models: {}, defaults: {}, allow_raw_model_ids: true };
+  const probeCtx = { ...ctx, config };
+  const args = { mode: 'extract', task: PROBE_TASK, files: [file], max_tokens: PROBE_MAX_TOKENS };
+  const choice = { alias: null, label: id, ids: [id], params: { reasoning: { effort: 'none' } } };
+  let res;
+  try {
+    const input = await prepareInput(args, { config, platform, now: nowFn() });
+    res = await runPrepared({ args, ctx: probeCtx, input, choice, zdr, account, ledger, or, deps, nowFn, platform, requested: PROBE_MAX_TOKENS, tool: 'probe', limits: { retries: 0, timeoutMs: deps.probeTimeoutMs ?? PROBE_TIMEOUT_MS, resplit: false } });
+  } catch (e) {
+    if (e instanceof InputError) return report({ id, ok: false, reason: e.message, cost: 0 });
+    throw e;
+  }
+  if (res.rec.error === 'budget') throw new InputError(`picking stopped: ${res.error}`);
+  const v = probeVerdict(res);
+  return report({ id, ok: v.ok, reason: v.reason, cost: res.rec.cost });
+}
+
 
 // Chunks whose answer stopped on finish_reason "length" are split in two by lines and
 // both halves run once; a half cut again stays truncated. The cut answers are dropped
 // (their cost and tokens still count). Returns { chunks, outs, failure, dropped, resplit }.
 async function resplitTruncated({ chunks, outs, failure, input, plan, run, config, job }) {
-  if (failure || run.signal.aborted || !RESPLIT_MODES.has(input.mode)) return { chunks, outs, failure, dropped: [], resplit: 0 };
+  if (failure || run.signal.aborted || run.limits?.resplit === false || !RESPLIT_MODES.has(input.mode)) return { chunks, outs, failure, dropped: [], resplit: 0 };
   const splits = [];
   outs.forEach((o, i) => {
     if (!o?.truncated || chunks[i].resplit_of) return;
@@ -667,7 +847,7 @@ async function resplitTruncated({ chunks, outs, failure, input, plan, run, confi
   return { chunks: nextChunks.map((c, n) => ({ ...c, index: n + 1 })), outs: nextOuts, failure: r.failure, dropped, resplit: splits.length };
 }
 
-async function execute({ id, args, ctx, input, choice, plan, run, chunks: firstChunks, job, created, nowFn, platform }) {
+async function execute({ id, args, ctx, input, choice, plan, run, chunks: firstChunks, job, created, nowFn, platform, tool = 'eyes_run' }) {
   const { config, resultsDir } = ctx;
   const t0 = nowFn();
   let results;
@@ -700,7 +880,7 @@ async function execute({ id, args, ctx, input, choice, plan, run, chunks: firstC
 
   const rec = {
     ts: created,
-    tool: 'eyes_run',
+    tool,
     mode: args.mode,
     alias: choice.alias,
     primary: plan.primary.id,
@@ -809,13 +989,25 @@ async function execute({ id, args, ctx, input, choice, plan, run, chunks: firstC
   return { id, header, text, outs: done, plan, input, status, error, checks, exported, exportError, rec };
 }
 
-async function dryRun(args, ctx, { input, choice, requested, zdr, zdrError }) {
+// Context of a dry run of the picked models before anything is picked.
+const UNPICKED_CONTEXT = 32000;
+
+// `choice` null: picked models, nothing picked yet; the bodies carry model null and
+// the chunks are sized with max_context or 32 000.
+async function dryRun(args, ctx, { input, choice: given, requested, zdr, zdrError, modelLine = null }) {
   const { config, resultsDir } = ctx;
+  const choice = given ?? { alias: 'auto', label: 'auto', ids: [], params: { reasoning: { effort: 'none' } } };
   let plan;
   let modelId;
   let maxTokens;
   let contextNote;
-  if (zdr) {
+  if (!given) {
+    const context = config.max_context ?? UNPICKED_CONTEXT;
+    plan = chunkInput(input, context);
+    modelId = null;
+    maxTokens = requested;
+    contextNote = `${config.max_context ? `max_context ${context}` : `${context} tokens`}; no model picked yet`;
+  } else if (zdr) {
     plan = planJob(input, choice, { zdr, config, requested });
     modelId = plan.primary.id;
     maxTokens = plan.primary.maxTokens;
@@ -830,13 +1022,13 @@ async function dryRun(args, ctx, { input, choice, requested, zdr, zdrError }) {
     contextNote = `max_context ${config.max_context}; ZDR list unavailable, id not checked`;
   }
   const bodies = plan.chunks.map((c) =>
-    buildRequestBody({ modelId, params: choice.params, system: input.system, user: c.user, maxTokens }),
+    buildRequestBody({ modelId, params: choice.params, system: input.system, user: c.user, maxTokens, maxPrice: maxPriceOf(config.max_price_usd_per_mtok) }),
   );
   let header;
   const id = await writeResult(resultsDir, args.mode, {
     md: JSON.stringify(bodies, null, 2) + '\n',
     check: (rid) => {
-      header = dryRunHeader(rid, input, plan, choice, modelId, contextNote, maxTokens);
+      header = dryRunHeader(rid, input, plan, choice, modelId, contextNote, maxTokens, modelLine);
       return {
         id: rid,
         status: 'done',
@@ -907,7 +1099,7 @@ async function grepRun(args, ctx, deps) {
   const { platform, nowFn } = deps;
   if (args.export_to !== undefined) await planExport({ config, exportTo: args.export_to, id: PROBE_ID, platform });
   const t0 = nowFn();
-  const input = await prepareInput(args, { config, platform, now: nowFn(), urlDeps: deps.url });
+  const input = await prepareInput(args, { config, platform, now: nowFn(), urlDeps: deps.url, rootsHint: rootsAction(ctx) });
   const text = grepText(input);
   const counts = {
     files: input.files.length,

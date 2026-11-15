@@ -1,5 +1,5 @@
 name: cheap-eyes
-version: "0.2.1"
+version: "0.3.0"
 slug: cheap_eyes
 description: MCP server that hands bulk reading to cheap OpenRouter models, masks secrets and checks every answer against the source.
 url: https://github.com/st412m/cheap-eyes
@@ -29,18 +29,9 @@ backup_exclude:
 options:
   openrouter_key: ""
   http_token: ""
-  models:
-    - alias: fast
-      ids: qwen/qwen3.6-35b-a3b, inclusionai/ling-3.0-flash-vl
-      reasoning: none
-    - alias: long
-      ids: deepseek/deepseek-v4.1-flash
-      reasoning: none
-  defaults:
-    extract: fast
-    draft: fast
-    edits: fast
-    schema: long
+  # No models: the server picks them on the first job and pins the pick in /data.
+  models: []
+  defaults: {}
   max_price_usd_per_mtok: {}
   daily_budget_usd: 1.0
   read_roots:
@@ -55,7 +46,8 @@ options:
   log_level: info
 schema:
   openrouter_key: password
-  http_token: password(32,) # scan-secrets:allow (a schema type, not a value)
+  # Empty: generated on the first start and written back here; the server checks the length.
+  http_token: str? # scan-secrets:allow (a schema type, not a value)
   models:
     - alias: match(^[A-Za-z0-9_-]+$)
       ids: str
